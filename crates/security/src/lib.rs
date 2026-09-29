@@ -40,7 +40,7 @@ impl Origin {
     pub fn new(scheme: impl Into<String>, host: impl Into<String>, port: Option<u16>) -> Self {
         let scheme = scheme.into().to_ascii_lowercase();
         let host = host.into().to_ascii_lowercase();
-        let port = port.unwrap_or_else(|| match scheme.as_str() {
+        let port = port.unwrap_or(match scheme.as_str() {
             "http" => 80,
             "https" => 443,
             _ => 0,
@@ -202,8 +202,8 @@ mod tests {
 
     #[test]
     fn default_ports_are_scheme_specific() {
-        assert_eq!(Origin::new("http", "example.com", None).port, 80);
-        assert_eq!(Origin::new("https", "example.com", None).port, 443);
+        assert_eq!(Origin::new("http", "example.com", None).port(), 80);
+        assert_eq!(Origin::new("https", "example.com", None).port(), 443);
         assert_ne!(
             Origin::new("http", "example.com", None),
             Origin::new("https", "example.com", None)
