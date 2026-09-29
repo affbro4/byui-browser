@@ -7,7 +7,10 @@ pub(super) fn from_token(token: &Token) -> Option<BinaryOperator> {
         Token::Subtract => Some(BinaryOperator::Subtract),
         Token::Multiply => Some(BinaryOperator::Multiply),
         Token::Divide => Some(BinaryOperator::Divide),
-        Token::Number(_) => None,
+        Token::EqualEqual => Some(BinaryOperator::Equal),
+        Token::LessThan => Some(BinaryOperator::Less),
+        Token::GreaterThan => Some(BinaryOperator::Greater),
+        _ => None,
     }
 }
 
