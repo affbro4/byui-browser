@@ -1,4 +1,12 @@
+#[allow(dead_code)]
+mod assignment;
 mod binary_operator;
+#[allow(dead_code)]
+mod call;
+#[allow(dead_code)]
+mod logical;
+#[allow(dead_code)]
+mod unary;
 
 use crate::ast::Expr;
 
