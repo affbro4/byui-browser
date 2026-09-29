@@ -46,19 +46,11 @@ impl Origin {
             _ => 0,
         });
 
-        Self {
-            scheme,
-            host,
-            port,
-        }
+        Self { scheme, host, port }
     }
 
     /// Creates an origin with an explicitly specified port.
-    pub fn with_port(
-        scheme: impl Into<String>,
-        host: impl Into<String>,
-        port: u16,
-    ) -> Self {
+    pub fn with_port(scheme: impl Into<String>, host: impl Into<String>, port: u16) -> Self {
         Self::new(scheme, host, Some(port))
     }
 
@@ -176,10 +168,7 @@ mod tests {
 
     fn origin(scheme: &str, host: &str, port: u16) -> Origin {
         // Once we get a URL parser, we can use it here to test the parse() function. For now, just construct the origin directly.
-        Origin::with_port(
-            scheme,
-            host,
-            port)
+        Origin::with_port(scheme, host, port)
     }
 
     #[test]
