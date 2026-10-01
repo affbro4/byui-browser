@@ -8,7 +8,12 @@ use std::sync::Arc;
 
 use tokio::sync::Semaphore;
 
-use crate::{error::RequestError, request::Request, response::Response, transport::Transport};
+use crate::{
+    error::RequestError,
+    request::Request,
+    response::{Response, StreamingResponse},
+    transport::Transport,
+};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd)]
 pub(crate) enum RequestPriority {
@@ -52,5 +57,21 @@ impl RequestScheduler {
             .await
             .map_err(|_| RequestError::SchedulerClosed)?;
         self.transport.send(request).await
+    }
+
+    pub(crate) async fn submit_stream(
+        &self,
+        request: Request,
+        _priority: RequestPriority,
+    ) -> Result<StreamingResponse, RequestError> {
+        let permit = self
+            .permits
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| RequestError::SchedulerClosed)?;
+        let mut response = self.transport.send_stream(request).await?;
+        response.body.attach_permit(permit);
+        Ok(response)
     }
 }

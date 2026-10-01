@@ -2,15 +2,28 @@
 
 use std::sync::Arc;
 
+use futures_util::StreamExt;
 use reqwest::Client;
 
-use crate::{config::Config, error::RequestError, request::Request, response::Response};
+use crate::{
+    config::Config,
+    error::RequestError,
+    request::Request,
+    response::{Response, ResponseBody, StreamingResponse},
+};
 
 pub(crate) trait Transport: Send + Sync {
     fn send(
         &self,
         request: Request,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, RequestError>> + Send>>;
+
+    fn send_stream(
+        &self,
+        request: Request,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<StreamingResponse, RequestError>> + Send>,
+    >;
 }
 
 pub(crate) fn reqwest_transport(config: Config) -> Result<Arc<dyn Transport>, reqwest::Error> {
@@ -56,6 +69,38 @@ impl Transport for ReqwestTransport {
                 headers: response.headers().clone(),
                 url: response.url().to_string(),
                 body: response.bytes().await?.to_vec(),
+                from_cache: false,
+            })
+        })
+    }
+
+    fn send_stream(
+        &self,
+        request: Request,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<StreamingResponse, RequestError>> + Send>,
+    > {
+        let client = self.client.clone();
+        Box::pin(async move {
+            let url = reqwest::Url::parse(&request.url)
+                .map_err(|_| RequestError::InvalidUrl(request.url.clone()))?;
+            let mut builder = client.request(request.method, url).headers(request.headers);
+            if let Some(body) = request.body {
+                builder = builder.body(body);
+            }
+            let response = builder.send().await?;
+            let status = response.status();
+            let headers = response.headers().clone();
+            let response_url = response.url().to_string();
+            let body = response
+                .bytes_stream()
+                .map(|chunk| chunk.map_err(RequestError::from));
+
+            Ok(StreamingResponse {
+                status,
+                headers,
+                url: response_url,
+                body: ResponseBody::from_stream(body),
                 from_cache: false,
             })
         })

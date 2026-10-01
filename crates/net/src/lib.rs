@@ -38,4 +38,4 @@ pub use config::Config;
 pub use controller::RequestController;
 pub use error::RequestError;
 pub use request::{CacheMode, CredentialsMode, FetchContext, Request, RequestMode};
-pub use response::Response;
+pub use response::{Response, ResponseBody, StreamingResponse};

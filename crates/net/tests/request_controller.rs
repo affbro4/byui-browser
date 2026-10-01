@@ -11,6 +11,7 @@ use std::{
     time::Duration,
 };
 
+use futures_util::StreamExt;
 use net::{CacheMode, Config, Request, RequestController, RequestError};
 use reqwest::{Method, StatusCode, header::HeaderValue};
 
@@ -39,6 +40,61 @@ fn fetch_sends_headers_and_body_to_a_local_server() {
     assert_eq!(response.status, StatusCode::CREATED);
     assert_eq!(response.body, b"created");
     assert!(!response.from_cache);
+}
+
+#[test]
+fn fetch_stream_yields_body_chunks_before_response_completion() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        read_request(&mut stream);
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\nhello")
+            .unwrap();
+        stream.flush().unwrap();
+        thread::sleep(Duration::from_millis(100));
+        let _ = stream.write_all(b" world");
+    });
+
+    let controller = RequestController::new(Config::default()).unwrap();
+    let first_chunk = runtime().block_on(async {
+        let mut response = controller.fetch_stream(Request::get(url)).await.unwrap();
+        response.body.next().await.unwrap().unwrap().to_vec()
+    });
+
+    server.join().unwrap();
+    assert_eq!(first_chunk, b"hello");
+}
+
+#[test]
+fn fully_consumed_stream_is_cached() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let observed_hits = Arc::clone(&hits);
+    let server = TestServer::start(1, move |_| {
+        observed_hits.fetch_add(1, Ordering::SeqCst);
+        b"HTTP/1.1 200 OK\r\nCache-Control: max-age=60\r\nContent-Length: 6\r\nConnection: close\r\n\r\ncached".to_vec()
+    });
+    let controller = RequestController::new(Config::default()).unwrap();
+
+    runtime().block_on(async {
+        let mut response = controller
+            .fetch_stream(Request::get(server.url()))
+            .await
+            .unwrap();
+        let mut body = Vec::new();
+        while let Some(chunk) = response.body.next().await {
+            body.extend_from_slice(&chunk.unwrap());
+        }
+        assert_eq!(body, b"cached");
+
+        let cached = controller.fetch(Request::get(server.url())).await.unwrap();
+        assert!(cached.from_cache);
+        assert_eq!(cached.body, b"cached");
+    });
+
+    server.join();
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
 }
 
 #[test]
