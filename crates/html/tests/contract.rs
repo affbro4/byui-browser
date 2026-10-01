@@ -160,6 +160,43 @@ fn get_element_by_id_accepts_an_empty_id() {
 }
 
 #[test]
+fn query_selector_returns_first_matching_descendant_in_tree_order() {
+    let document = parse_raw_html(
+        "<div class='target'><span class='target'></span></div><p class='target'></p>".into(),
+    );
+
+    assert_eq!(
+        document.query_selector(".target").unwrap(),
+        Some(html::NodeId(1))
+    );
+    assert_eq!(
+        document.query_selector("span.target").unwrap(),
+        Some(html::NodeId(2))
+    );
+}
+
+#[test]
+fn query_selector_supports_compound_selectors_and_returns_none_for_no_match() {
+    let document = parse_raw_html(
+        "<main><article id='story' class='post featured'>text</article></main>".into(),
+    );
+
+    assert_eq!(
+        document.query_selector("article.post#story").unwrap(),
+        Some(html::NodeId(2))
+    );
+    assert_eq!(document.query_selector(".missing").unwrap(), None);
+}
+
+#[test]
+fn query_selector_rejects_invalid_selectors() {
+    let document = parse_raw_html("<div></div>".into());
+    assert!(document.query_selector("").is_err());
+    assert!(document.query_selector(".class name").is_err());
+    assert!(document.query_selector("div,").is_err());
+}
+
+#[test]
 fn parses_attributes_and_boolean_attributes_as_ordered_values() {
     let document = parse_raw_html("<input disabled class='field' data-count=3>".to_owned());
     let input = document.query("input").pop().expect("input");
