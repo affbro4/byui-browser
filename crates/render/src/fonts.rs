@@ -2,7 +2,7 @@
 
 /// Returns the seven-row, five-column bitmap glyph for a supported character.
 ///
-/// The first slice supports a small roughly 12-character font; unsupported
+/// The first slice supports a small bitmap font; unsupported
 /// characters are skipped by the compositor.
 pub fn glyph(character: char) -> Option<[u8; 7]> {
     let glyph = match character.to_ascii_uppercase() {
@@ -23,6 +23,9 @@ pub fn glyph(character: char) -> Option<[u8; 7]> {
         ],
         'L' => [
             0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111,
+        ],
+        'M' => [
+            0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001,
         ],
         'O' => [
             0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
@@ -46,4 +49,20 @@ pub fn glyph(character: char) -> Option<[u8; 7]> {
         _ => return None,
     };
     Some(glyph)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::glyph;
+
+    #[test]
+    fn supports_uppercase_and_lowercase_m() {
+        assert_eq!(glyph('M'), glyph('m'));
+        assert_eq!(
+            glyph('M'),
+            Some([
+                0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001
+            ])
+        );
+    }
 }
