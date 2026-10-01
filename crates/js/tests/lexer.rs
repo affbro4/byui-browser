@@ -102,3 +102,17 @@ fn malformed_numbers_and_unterminated_strings_are_invalid_tokens() {
         ]
     );
 }
+
+#[test]
+fn spans_use_utf8_byte_offsets_and_exclude_whitespace() {
+    let source = "  'é' <= 2\n";
+    let entries = js::lexer::tokenize_spanned(source);
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| (entry.start, entry.end))
+            .collect::<Vec<_>>(),
+        vec![(2, 6), (7, 9), (10, 11)]
+    );
+    assert_eq!(&source[entries[0].start..entries[0].end], "'é'");
+}

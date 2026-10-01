@@ -82,6 +82,17 @@ pub enum Token {
     Invalid(String),
 }
 
+/// A token and its UTF-8 byte range in the original source.
+#[derive(Debug, PartialEq)]
+pub struct SpannedToken {
+    /// The lexical token owned by this entry.
+    pub token: Token,
+    /// Inclusive byte offset of the token's first character.
+    pub start: usize,
+    /// Exclusive byte offset after the token's last character.
+    pub end: usize,
+}
+
 /// Converts source text into tokens.
 ///
 /// Strings may use single or double quotes. The supported escapes are `\\`,
@@ -91,6 +102,16 @@ pub enum Token {
 /// unsupported characters produce [`Token::Unknown`]. This lexer intentionally
 /// returns tokens rather than failing fast, so callers can inspect all input.
 pub fn tokenize(input: &str) -> Vec<Token> {
+    tokenize_spanned(input)
+        .into_iter()
+        .map(|entry| entry.token)
+        .collect()
+}
+
+/// Tokenizes source while retaining UTF-8 byte ranges for diagnostics.
+///
+/// Uses the same lexical rules and error tokens as [`tokenize`].
+pub fn tokenize_spanned(input: &str) -> Vec<SpannedToken> {
     let mut tokens = Vec::new();
     let mut chars = input.char_indices().peekable();
 
@@ -100,23 +121,18 @@ pub fn tokenize(input: &str) -> Vec<Token> {
             continue;
         }
 
-        if ch.is_ascii_digit()
+        let start = chars.peek().map_or(input.len(), |(index, _)| *index);
+        let token = if ch.is_ascii_digit()
             || (ch == '.'
                 && chars
                     .clone()
                     .nth(1)
                     .is_some_and(|(_, next)| next.is_ascii_digit()))
         {
-            tokens.push(scan_number(input, &mut chars));
-            continue;
-        }
-
-        if ch == '\'' || ch == '"' {
-            tokens.push(scan_string(&mut chars, ch));
-            continue;
-        }
-
-        if is_identifier_start(ch) {
+            scan_number(input, &mut chars)
+        } else if ch == '\'' || ch == '"' {
+            scan_string(&mut chars, ch)
+        } else if is_identifier_start(ch) {
             let start = chars.peek().expect("peeked character exists").0;
             let mut end = start;
 
@@ -130,7 +146,7 @@ pub fn tokenize(input: &str) -> Vec<Token> {
             }
 
             let identifier = &input[start..end];
-            tokens.push(match identifier {
+            match identifier {
                 "let" => Token::Let,
                 "var" => Token::Var,
                 "const" => Token::Const,
@@ -144,40 +160,41 @@ pub fn tokenize(input: &str) -> Vec<Token> {
                 "null" => Token::Null,
                 "undefined" => Token::Undefined,
                 _ => Token::Identifier(identifier.to_owned()),
-            });
-            continue;
-        }
-
-        chars.next();
-        tokens.push(match ch {
-            '+' => Token::Plus,
-            '-' => Token::Subtract,
-            '*' => Token::Multiply,
-            '/' => Token::Divide,
-            '=' => match take_if(&mut chars, '=') {
-                true if take_if(&mut chars, '=') => Token::StrictEqual,
-                true => Token::EqualEqual,
-                false => Token::Assign,
-            },
-            '!' => match take_if(&mut chars, '=') {
-                true if take_if(&mut chars, '=') => Token::StrictBangEqual,
-                true => Token::BangEqual,
-                false => Token::Bang,
-            },
-            '<' if take_if(&mut chars, '=') => Token::LessEqual,
-            '<' => Token::LessThan,
-            '>' if take_if(&mut chars, '=') => Token::GreaterEqual,
-            '>' => Token::GreaterThan,
-            '&' if take_if(&mut chars, '&') => Token::AndAnd,
-            '|' if take_if(&mut chars, '|') => Token::OrOr,
-            ';' => Token::Semicolon,
-            '(' => Token::LeftParen,
-            ')' => Token::RightParen,
-            '{' => Token::LeftBrace,
-            '}' => Token::RightBrace,
-            ',' => Token::Comma,
-            other => Token::Unknown(other),
-        });
+            }
+        } else {
+            chars.next();
+            match ch {
+                '+' => Token::Plus,
+                '-' => Token::Subtract,
+                '*' => Token::Multiply,
+                '/' => Token::Divide,
+                '=' => match take_if(&mut chars, '=') {
+                    true if take_if(&mut chars, '=') => Token::StrictEqual,
+                    true => Token::EqualEqual,
+                    false => Token::Assign,
+                },
+                '!' => match take_if(&mut chars, '=') {
+                    true if take_if(&mut chars, '=') => Token::StrictBangEqual,
+                    true => Token::BangEqual,
+                    false => Token::Bang,
+                },
+                '<' if take_if(&mut chars, '=') => Token::LessEqual,
+                '<' => Token::LessThan,
+                '>' if take_if(&mut chars, '=') => Token::GreaterEqual,
+                '>' => Token::GreaterThan,
+                '&' if take_if(&mut chars, '&') => Token::AndAnd,
+                '|' if take_if(&mut chars, '|') => Token::OrOr,
+                ';' => Token::Semicolon,
+                '(' => Token::LeftParen,
+                ')' => Token::RightParen,
+                '{' => Token::LeftBrace,
+                '}' => Token::RightBrace,
+                ',' => Token::Comma,
+                other => Token::Unknown(other),
+            }
+        };
+        let end = chars.peek().map_or(input.len(), |(index, _)| *index);
+        tokens.push(SpannedToken { token, start, end });
     }
 
     tokens
