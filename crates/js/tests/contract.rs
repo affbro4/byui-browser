@@ -71,3 +71,23 @@ fn invalid_bindings_return_errors() {
     assert!(eval("const answer = 42; answer = 7").is_err());
     assert!(eval("let answer = 1; let answer = 2").is_err());
 }
+
+#[test]
+fn unsupported_program_evaluation_returns_errors() {
+    for source in [
+        "f();",
+        "if (true) {}",
+        "while (false) {}",
+        "function f() { return; }",
+    ] {
+        assert!(eval(source).is_err(), "{source}");
+    }
+}
+
+#[test]
+fn program_parser_preserves_runtime_short_circuit_behavior() {
+    assert_eq!(eval("false && missing"), Ok(Value::Boolean(false)));
+    assert_eq!(eval("true || missing"), Ok(Value::Boolean(true)));
+    assert_eq!(eval("true && 2"), Ok(Value::Number(2.0)));
+    assert_eq!(eval("false || 3"), Ok(Value::Number(3.0)));
+}
