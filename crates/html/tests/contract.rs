@@ -253,12 +253,12 @@ fn preserves_void_element_siblings_and_does_not_push_void_nodes() {
             .copied()
             .find(|id| {
                 matches!(
-                    &document.nodes[id.index() as usize].kind,
+                    &document.nodes[id.index()].kind,
                     NodeKind::Element(element) if element.name == tag
                 )
             })
             .expect("void element child");
-        assert!(document.nodes[node_id.index() as usize].children.is_empty());
+        assert!(document.nodes[node_id.index()].children.is_empty());
     }
 }
 
