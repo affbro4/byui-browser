@@ -12,7 +12,7 @@ use std::{
 };
 
 use futures_util::StreamExt;
-use net::{CacheMode, Config, Request, RequestController, RequestError};
+use net::{CacheMode, Config, Request, RequestController, RequestError, StreamingResponse};
 use reqwest::{Method, StatusCode, header::HeaderValue};
 
 #[test]
@@ -68,6 +68,112 @@ fn fetch_stream_yields_body_chunks_before_response_completion() {
 }
 
 #[test]
+fn incomplete_stream_forwards_error_and_is_not_cached() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let observed_hits = Arc::clone(&hits);
+    let server = TestServer::start(2, move |_| {
+        if observed_hits.fetch_add(1, Ordering::SeqCst) == 0 {
+            // The connection closes before the advertised body is complete.
+            b"HTTP/1.1 200 OK\r\nCache-Control: max-age=60\r\nContent-Length: 11\r\nConnection: close\r\n\r\nshort".to_vec()
+        } else {
+            b"HTTP/1.1 200 OK\r\nCache-Control: max-age=60\r\nContent-Length: 5\r\nConnection: close\r\n\r\nvalid".to_vec()
+        }
+    });
+    let controller = RequestController::new(Config::default()).unwrap();
+
+    let (partial, retry) = runtime().block_on(async {
+        let mut response = controller
+            .fetch_stream(Request::get(server.url()))
+            .await
+            .unwrap();
+        let mut partial = Vec::new();
+        let mut error = None;
+        while let Some(chunk) = response.body.next().await {
+            match chunk {
+                Ok(chunk) => partial.extend_from_slice(&chunk),
+                Err(error_value) => {
+                    error = Some(error_value);
+                    break;
+                }
+            }
+        }
+
+        let retry = controller.fetch(Request::get(server.url())).await.unwrap();
+        (partial, (error, retry))
+    });
+
+    server.join();
+    assert_eq!(partial, b"short");
+    assert!(matches!(retry.0, Some(RequestError::Transport(_))));
+    assert!(!retry.1.from_cache);
+    assert_eq!(retry.1.body, b"valid");
+    assert_eq!(hits.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn dropping_a_stream_releases_its_scheduler_permit_and_does_not_cache() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let observed_hits = Arc::clone(&hits);
+    let server = TestServer::start(2, move |_| {
+        observed_hits.fetch_add(1, Ordering::SeqCst);
+        b"HTTP/1.1 200 OK\r\nCache-Control: max-age=60\r\nContent-Length: 4\r\nConnection: close\r\n\r\nbody".to_vec()
+    });
+    let controller = RequestController::new(Config {
+        max_in_flight: 1,
+        ..Config::default()
+    })
+    .unwrap();
+
+    runtime().block_on(async {
+        let mut response = controller
+            .fetch_stream(Request::get(server.url()))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.body.next().await.unwrap().unwrap().as_ref(),
+            b"body"
+        );
+        drop(response);
+
+        let retry = controller.fetch(Request::get(server.url())).await.unwrap();
+        assert!(!retry.from_cache);
+        assert_eq!(retry.body, b"body");
+    });
+
+    server.join();
+    assert_eq!(hits.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn empty_stream_body_can_be_consumed_and_cached() {
+    let server = TestServer::start(1, |_| {
+        b"HTTP/1.1 204 No Content\r\nCache-Control: max-age=60\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()
+    });
+    let controller = RequestController::new(Config::default()).unwrap();
+
+    let (first, second) = runtime().block_on(async {
+        let first = controller
+            .fetch_stream(Request::get(server.url()))
+            .await
+            .unwrap();
+        let first_body = collect_body(first).await.unwrap();
+
+        let second = controller
+            .fetch_stream(Request::get(server.url()))
+            .await
+            .unwrap();
+        let second_from_cache = second.from_cache;
+        let second_body = collect_body(second).await.unwrap();
+        ((first_body, second_from_cache), second_body)
+    });
+
+    server.join();
+    assert!(first.0.is_empty());
+    assert!(first.1);
+    assert!(second.is_empty());
+}
+
+#[test]
 fn fully_consumed_stream_is_cached() {
     let hits = Arc::new(AtomicUsize::new(0));
     let observed_hits = Arc::clone(&hits);
@@ -95,6 +201,153 @@ fn fully_consumed_stream_is_cached() {
 
     server.join();
     assert_eq!(hits.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn no_store_streams_are_not_cached() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let observed_hits = Arc::clone(&hits);
+    let server = TestServer::start(2, move |_| {
+        observed_hits.fetch_add(1, Ordering::SeqCst);
+        b"HTTP/1.1 200 OK\r\nCache-Control: max-age=60\r\nContent-Length: 5\r\nConnection: close\r\n\r\nfresh".to_vec()
+    });
+    let controller = RequestController::new(Config::default()).unwrap();
+
+    runtime().block_on(async {
+        let mut request = Request::get(server.url());
+        request.cache_mode = CacheMode::NoStore;
+        let first = controller.fetch_stream(request.clone()).await.unwrap();
+        let second = controller.fetch_stream(request).await.unwrap();
+        assert!(!first.from_cache);
+        assert!(!second.from_cache);
+        assert_eq!(collect_body(first).await.unwrap(), b"fresh");
+        assert_eq!(collect_body(second).await.unwrap(), b"fresh");
+    });
+
+    server.join();
+    assert_eq!(hits.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn reload_stream_bypasses_cache_and_caches_the_refresh() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let observed_hits = Arc::clone(&hits);
+    let server = TestServer::start(2, move |_| {
+        let body = if observed_hits.fetch_add(1, Ordering::SeqCst) == 0 {
+            "first"
+        } else {
+            "second"
+        };
+        format!(
+            "HTTP/1.1 200 OK\r\nCache-Control: max-age=60\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(), body
+        )
+        .into_bytes()
+    });
+    let controller = RequestController::new(Config::default()).unwrap();
+
+    let (first, refreshed, cached) = runtime().block_on(async {
+        let request = Request::get(server.url());
+        let first = collect_body(controller.fetch_stream(request.clone()).await.unwrap())
+            .await
+            .unwrap();
+
+        let mut reload = request;
+        reload.cache_mode = CacheMode::Reload;
+        let refreshed_response = controller.fetch_stream(reload).await.unwrap();
+        let refreshed_from_cache = refreshed_response.from_cache;
+        let refreshed = collect_body(refreshed_response).await.unwrap();
+        let cached_response = controller
+            .fetch_stream(Request::get(server.url()))
+            .await
+            .unwrap();
+        let cached_from_cache = cached_response.from_cache;
+        let cached = collect_body(cached_response).await.unwrap();
+        (
+            first,
+            (refreshed_from_cache, refreshed),
+            (cached_from_cache, cached),
+        )
+    });
+
+    server.join();
+    assert_eq!(first, b"first");
+    assert!(!refreshed.0);
+    assert_eq!(refreshed.1, b"second");
+    assert!(cached.0);
+    assert_eq!(cached.1, b"second");
+    assert_eq!(hits.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn only_if_cached_returns_a_streaming_cache_hit() {
+    let server = TestServer::start(1, |_| {
+        b"HTTP/1.1 200 OK\r\nCache-Control: max-age=60\r\nContent-Length: 6\r\nX-Cache-Test: yes\r\nConnection: close\r\n\r\ncached".to_vec()
+    });
+    let controller = RequestController::new(Config::default()).unwrap();
+
+    let (from_cache, body, header) = runtime().block_on(async {
+        let request = Request::get(server.url());
+        collect_body(controller.fetch_stream(request.clone()).await.unwrap())
+            .await
+            .unwrap();
+
+        let mut only_cached = request;
+        only_cached.cache_mode = CacheMode::OnlyIfCached;
+        let response = controller.fetch_stream(only_cached).await.unwrap();
+        let from_cache = response.from_cache;
+        let header = response.headers["x-cache-test"]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let body = collect_body(response).await.unwrap();
+        (from_cache, body, header)
+    });
+
+    server.join();
+    assert!(from_cache);
+    assert_eq!(body, b"cached");
+    assert_eq!(header, "yes");
+}
+
+#[test]
+fn streamed_redirect_exposes_the_final_url_and_response() {
+    let target_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let target_url = format!("http://{}", target_listener.local_addr().unwrap());
+    let target_server = thread::spawn(move || {
+        let (mut stream, _) = target_listener.accept().unwrap();
+        read_request(&mut stream);
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nfinal")
+            .unwrap();
+    });
+
+    let redirect_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let redirect_url = format!("http://{}", redirect_listener.local_addr().unwrap());
+    let redirect_target = target_url.clone();
+    let redirect_server = thread::spawn(move || {
+        let (mut stream, _) = redirect_listener.accept().unwrap();
+        read_request(&mut stream);
+        let response = format!(
+            "HTTP/1.1 302 Found\r\nLocation: {redirect_target}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        stream.write_all(response.as_bytes()).unwrap();
+    });
+
+    let controller = RequestController::new(Config::default()).unwrap();
+    let response = runtime().block_on(async {
+        controller
+            .fetch_stream(Request::get(redirect_url))
+            .await
+            .unwrap()
+    });
+    let final_url = response.url.clone();
+    let body = runtime().block_on(collect_body(response)).unwrap();
+
+    redirect_server.join().unwrap();
+    target_server.join().unwrap();
+    assert_eq!(final_url, format!("{target_url}/"));
+    assert_eq!(body, b"final");
 }
 
 #[test]
@@ -289,6 +542,14 @@ fn scheduler_limits_active_transport_requests() {
 
 fn runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Runtime::new().expect("Tokio runtime should initialize")
+}
+
+async fn collect_body(mut response: StreamingResponse) -> Result<Vec<u8>, RequestError> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response.body.next().await {
+        body.extend_from_slice(&chunk?);
+    }
+    Ok(body)
 }
 
 struct TestServer {
