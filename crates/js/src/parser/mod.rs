@@ -57,13 +57,27 @@ type ParseResult<T> = Result<T, ParseError>;
 /// Returns outside functions and constants without initializers are rejected.
 /// Nesting beyond 128 recursive grammar levels returns an error to bound stack
 /// usage. The lexer does not currently supply a remainder operator token.
-pub fn parse(tokens: &[Token]) -> ParseResult<Program> {
+pub fn parse_program(tokens: &[Token]) -> ParseResult<Program> {
     let mut parser = Parser::new(tokens);
     let mut body = Vec::new();
     while parser.peek().is_some() {
         body.push(parser.parse_statement()?);
     }
     Ok(Program { body })
+}
+
+/// Parses one complete expression into an owned AST.
+///
+/// Uses the same expression grammar and nesting bound as [`parse_program`].
+/// Trailing tokens, including semicolons, are rejected. Errors include a token
+/// index; source positions are supplied by the program-level [`crate::parse`].
+pub fn parse(tokens: &[Token]) -> ParseResult<Expr> {
+    let mut parser = Parser::new(tokens);
+    let expression = parser.parse_expression(0)?;
+    if parser.peek().is_some() {
+        return Err(parser.error("Unexpected token after expression", "expression"));
+    }
+    Ok(expression)
 }
 
 struct Parser<'tokens> {

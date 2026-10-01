@@ -113,14 +113,14 @@ pub use ast::{Program, Statement};
 
 /// Parses source text into an owned [`Program`].
 ///
-/// Uses the subset and semicolon policy documented by [`parser::parse`].
+/// Uses the subset and semicolon policy documented by [`parser::parse_program`].
 /// Syntax errors carry a token index, UTF-8 byte offset, and one-based line and
 /// character column. Locations at end of input point just past the source.
 pub fn parse(source: &str) -> Result<Program, parser::ParseError> {
     let entries = lexer::tokenize_spanned(source);
     let starts: Vec<_> = entries.iter().map(|entry| entry.start).collect();
     let tokens: Vec<_> = entries.into_iter().map(|entry| entry.token).collect();
-    parser::parse(&tokens).map_err(|mut error| {
+    parser::parse_program(&tokens).map_err(|mut error| {
         let offset = starts
             .get(error.token_index)
             .copied()
@@ -135,12 +135,9 @@ pub fn parse(source: &str) -> Result<Program, parser::ParseError> {
 
 /// Parses and evaluates source text, returning the completion value.
 ///
-/// Currently only empty programs evaluate successfully, yielding undefined.
-/// Nonempty programs return an evaluation error after successful parsing.
+/// Supports the existing tree-walk runtime: expressions, declarations, and
+/// blocks. Other parsed statement forms and calls return runtime errors.
 pub fn eval(source: &str) -> JsResult<Value> {
     let program = parse(source).map_err(|error| JsError::new(error.to_string()))?;
-    if program.body.is_empty() {
-        return Ok(Value::Undefined);
-    }
-    Err(JsError::new("JavaScript evaluation is not implemented"))
+    runtime::evaluate_program(&program)
 }
