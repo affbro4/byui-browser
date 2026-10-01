@@ -12,6 +12,11 @@ use crate::{
     response::{Response, ResponseBody, StreamingResponse},
 };
 
+/// Performs HTTP I/O behind the networking policy and scheduling layers.
+///
+/// Implementations must be shareable across controller clones and must return
+/// sendable futures because requests may execute concurrently on the async
+/// runtime. Browser policy decisions belong to the caller, not this boundary.
 pub(crate) trait Transport: Send + Sync {
     /// Executes a request and buffers its complete response body.
     ///

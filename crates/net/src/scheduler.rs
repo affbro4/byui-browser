@@ -56,6 +56,8 @@ impl RequestScheduler {
         }
     }
 
+    /// Admits a request, holds a permit while its complete body is received,
+    /// and returns the buffered response.
     pub(crate) async fn submit(
         &self,
         request: Request,
