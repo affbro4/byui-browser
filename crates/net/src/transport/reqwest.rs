@@ -13,11 +13,19 @@ use crate::{
 };
 
 pub(crate) trait Transport: Send + Sync {
+    /// Executes a request and buffers its complete response body.
+    ///
+    /// The returned future owns the request and client handle, allowing the
+    /// transport call to outlive the borrowing method invocation.
     fn send(
         &self,
         request: Request,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, RequestError>> + Send>>;
 
+    /// Executes a request and returns once response headers are available.
+    ///
+    /// The body remains a stream and is received as the caller polls the
+    /// returned [`StreamingResponse`].
     fn send_stream(
         &self,
         request: Request,
@@ -26,15 +34,22 @@ pub(crate) trait Transport: Send + Sync {
     >;
 }
 
+/// Builds the reqwest-backed transport used by the networking controller.
+///
+/// Client construction configures connection pooling, redirects, and the
+/// optional user agent once. The resulting client can then be cheaply cloned
+/// for concurrent request futures.
 pub(crate) fn reqwest_transport(config: Config) -> Result<Arc<dyn Transport>, reqwest::Error> {
     Ok(Arc::new(ReqwestTransport::new(config)?))
 }
 
+/// HTTP transport implementation that owns one reusable reqwest client.
 struct ReqwestTransport {
     client: Client,
 }
 
 impl ReqwestTransport {
+    /// Creates a configured reqwest client without performing network I/O.
     fn new(config: Config) -> Result<Self, reqwest::Error> {
         let mut builder = Client::builder()
             .redirect(reqwest::redirect::Policy::limited(config.max_redirects))

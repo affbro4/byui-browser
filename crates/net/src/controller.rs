@@ -28,10 +28,15 @@ pub struct RequestController {
 }
 
 struct ControllerInner {
+    /// Process-local response cache shared by controller clones.
     cache: ResponseCache,
+    /// Cookie attachment and response processing boundary.
     cookies: CookieStore,
+    /// Cross-origin response validation boundary.
     cors: CorsChecker,
+    /// Request and response policy validation boundary.
     policy: RequestPolicy,
+    /// Shared transport admission and concurrency controller.
     scheduler: RequestScheduler,
 }
 
@@ -156,13 +161,21 @@ impl RequestController {
 }
 
 struct CacheCapture {
+    /// Cache receiving the body after successful end-of-stream.
     cache: ResponseCache,
+    /// Original request used to compute the cache key.
     request: Request,
+    /// Response metadata retained while the body is consumed.
     status: reqwest::StatusCode,
     headers: reqwest::header::HeaderMap,
     url: String,
 }
 
+/// Wraps a response body so completed network responses are copied into cache.
+///
+/// Bytes are forwarded immediately to the caller while a second copy is
+/// collected. Any body error abandons the capture, and only a clean end of
+/// stream inserts the complete response.
 fn with_cache_capture(
     mut response: StreamingResponse,
     cache: ResponseCache,

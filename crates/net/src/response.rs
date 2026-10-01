@@ -42,6 +42,11 @@ impl Stream for ResponseBody {
 }
 
 impl ResponseBody {
+    /// Wraps an asynchronous byte stream as a response body.
+    ///
+    /// The stream is boxed so transports can provide different concrete stream
+    /// types while exposing one response API. It must be `Send` because the
+    /// networking work may be polled on a different executor thread.
     pub(crate) fn from_stream<S>(stream: S) -> Self
     where
         S: Stream<Item = Result<Bytes, RequestError>> + Send + 'static,
@@ -52,12 +57,18 @@ impl ResponseBody {
         }
     }
 
+    /// Creates a one-item stream for a body that is already buffered.
     pub(crate) fn once(body: Vec<u8>) -> Self {
         Self::from_stream(futures_util::stream::once(
             async move { Ok(Bytes::from(body)) },
         ))
     }
 
+    /// Separates the body stream from the permit that keeps a request admitted.
+    ///
+    /// This is used when the controller wraps the stream to capture completed
+    /// responses for caching. The permit must be reattached to the replacement
+    /// body so concurrency remains bounded until consumption finishes.
     pub(crate) fn into_parts(
         self,
     ) -> (
@@ -67,6 +78,11 @@ impl ResponseBody {
         (self.inner, self.permit)
     }
 
+    /// Holds a scheduler permit until this body is dropped.
+    ///
+    /// A streaming request is considered in flight while its body can still
+    /// produce bytes, so releasing the permit at header receipt would allow
+    /// more active network work than the configured limit permits.
     pub(crate) fn attach_permit(&mut self, permit: tokio::sync::OwnedSemaphorePermit) {
         self.permit = Some(permit);
     }
