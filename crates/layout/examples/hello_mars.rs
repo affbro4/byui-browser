@@ -34,7 +34,7 @@ fn main() {
     }];
     add_border(&mut items, box_rect, border, border_color);
     items.push(DisplayItem::Text {
-        x: box_rect.x + 61.0,
+        x: box_rect.x + 33.0,
         y: box_rect.y + 49.0,
         text: "Hello Mars, We Are Earthlings".to_owned(),
         color: text_color,
