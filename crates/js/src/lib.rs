@@ -11,6 +11,8 @@ pub mod lexer;
 pub mod parser;
 pub mod runtime;
 
+pub use ast::Program;
+
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
@@ -109,28 +111,13 @@ impl Realm {
 }
 
 /// A parsed program. The full statement shape is still under development.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct Program {
-    pub statements: Vec<Statement>,
-}
-
-/// One statement in the AST.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Statement {}
-
 /// Parses source text into a [`Program`].
 pub fn parse(source: &str) -> JsResult<Program> {
-    if source.trim().is_empty() {
-        return Ok(Program::default());
-    }
-    Err(JsError::new("JavaScript parsing is not implemented"))
+    parser::parse_program(&lexer::tokenize(source)).map_err(JsError::new)
 }
 
 /// Parses and evaluates source text, returning the completion value.
 pub fn eval(source: &str) -> JsResult<Value> {
     let program = parse(source)?;
-    if program.statements.is_empty() {
-        return Ok(Value::Undefined);
-    }
-    Err(JsError::new("JavaScript evaluation is not implemented"))
+    runtime::evaluate_program(&program)
 }
