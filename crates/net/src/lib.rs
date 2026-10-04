@@ -13,7 +13,7 @@
 // removed once implementation is finished, but is required for now to prevent
 // the integration tests from failing.
 #![allow(dead_code)]
-#![allow(unused_imports)]
+
 // Flag to forbid unsafe code. This is security-critical and permanant.
 #![forbid(unsafe_code)]
 

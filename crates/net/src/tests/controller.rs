@@ -7,7 +7,7 @@ use std::{
     thread,
 };
 
-use crate::{CacheMode, Config, Request, RequestController, RequestError, response};
+use crate::{CacheMode, Config, Request, RequestController, RequestError};
 use futures_util::StreamExt;
 use reqwest::{
     Method, StatusCode,
