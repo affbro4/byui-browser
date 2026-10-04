@@ -9,11 +9,9 @@
 //! the Network process. Cookie jar / cache policy decisions are owned by
 //! Security & Storage.
 
-// Crate-wide flags to ignore dead code and unused imports warnings. Will be
-// removed once implementation is finished, but is required for now to prevent
-// the integration tests from failing.
+// Crate-wide flags to ignore dead code warnings. Will be removed once implementation
+// is finished, but is required for now to prevent the integration tests from failing.
 #![allow(dead_code)]
-
 // Flag to forbid unsafe code. This is security-critical and permanant.
 #![forbid(unsafe_code)]
 

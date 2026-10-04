@@ -72,6 +72,8 @@ impl RequestController {
     /// requests pass through policy validation, cookie attachment, scheduling,
     /// transport, response validation, cookie processing, and cache insertion.
     pub async fn fetch(&self, request: Request) -> Result<Response, RequestError> {
+        // Reuses the streaming fetch implementation by streaming the response and then buffering it
+        // into a fully collected response.
         let mut streaming = self.fetch_stream(request).await?;
         let mut body = Vec::new();
         while let Some(chunk) = streaming.body.next().await {
@@ -126,7 +128,7 @@ impl RequestController {
         let response = self
             .inner
             .scheduler
-            .submit_stream(request.clone(), RequestPriority::Normal)
+            .submit(request.clone(), RequestPriority::Normal)
             .await?;
 
         let response_metadata = Response {

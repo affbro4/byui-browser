@@ -9,10 +9,7 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 
 use crate::{
-    error::RequestError,
-    request::Request,
-    response::{Response, StreamingResponse},
-    transport::Transport,
+    error::RequestError, request::Request, response::StreamingResponse, transport::Transport,
 };
 
 /// Relative importance assigned to a request by the network scheduler.
@@ -56,30 +53,12 @@ impl RequestScheduler {
         }
     }
 
-    /// Admits a request, holds a permit while its complete body is received,
-    /// and returns the buffered response.
-    pub(crate) async fn submit(
-        &self,
-        request: Request,
-        _priority: RequestPriority,
-    ) -> Result<Response, RequestError> {
-        // Holding the permit for the entire transport future bounds active
-        // network work, rather than merely bounding task submission.
-        let _permit = self
-            .permits
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| RequestError::SchedulerClosed)?;
-        self.transport.send(request).await
-    }
-
-    /// Admits a streaming request and keeps its permit with the response body.
+    /// Admits a request and keeps its permit with the response body.
     ///
     /// The permit is deliberately transferred into [`ResponseBody`](crate::ResponseBody)
     /// after response headers arrive. It is released only when the body is
     /// fully consumed or dropped.
-    pub(crate) async fn submit_stream(
+    pub(crate) async fn submit(
         &self,
         request: Request,
         _priority: RequestPriority,
@@ -90,7 +69,7 @@ impl RequestScheduler {
             .acquire_owned()
             .await
             .map_err(|_| RequestError::SchedulerClosed)?;
-        let mut response = self.transport.send_stream(request).await?;
+        let mut response = self.transport.send(request).await?;
         response.body.attach_permit(permit);
         Ok(response)
     }

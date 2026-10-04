@@ -9,7 +9,7 @@ use crate::{
     config::Config,
     error::RequestError,
     request::Request,
-    response::{Response, ResponseBody, StreamingResponse},
+    response::{ResponseBody, StreamingResponse},
 };
 
 /// Performs HTTP I/O behind the networking policy and scheduling layers.
@@ -18,20 +18,11 @@ use crate::{
 /// sendable futures because requests may execute concurrently on the async
 /// runtime. Browser policy decisions belong to the caller, not this boundary.
 pub(crate) trait Transport: Send + Sync {
-    /// Executes a request and buffers its complete response body.
-    ///
-    /// The returned future owns the request and client handle, allowing the
-    /// transport call to outlive the borrowing method invocation.
-    fn send(
-        &self,
-        request: Request,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, RequestError>> + Send>>;
-
     /// Executes a request and returns once response headers are available.
     ///
     /// The body remains a stream and is received as the caller polls the
     /// returned [`StreamingResponse`].
-    fn send_stream(
+    fn send(
         &self,
         request: Request,
     ) -> std::pin::Pin<
@@ -71,30 +62,6 @@ impl ReqwestTransport {
 
 impl Transport for ReqwestTransport {
     fn send(
-        &self,
-        request: Request,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, RequestError>> + Send>>
-    {
-        let client = self.client.clone();
-        Box::pin(async move {
-            let url = reqwest::Url::parse(&request.url)
-                .map_err(|_| RequestError::InvalidUrl(request.url.clone()))?;
-            let mut builder = client.request(request.method, url).headers(request.headers);
-            if let Some(body) = request.body {
-                builder = builder.body(body);
-            }
-            let response = builder.send().await?;
-            Ok(Response {
-                status: response.status(),
-                headers: response.headers().clone(),
-                url: response.url().to_string(),
-                body: response.bytes().await?.to_vec(),
-                from_cache: false,
-            })
-        })
-    }
-
-    fn send_stream(
         &self,
         request: Request,
     ) -> std::pin::Pin<
