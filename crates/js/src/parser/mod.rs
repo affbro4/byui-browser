@@ -1,4 +1,6 @@
-use crate::ast::{BinaryOperator, Expr, Program, Statement, UnaryOperator, VarKind};
+use crate::ast::{
+    BinaryOperator, Expr, LogicalOperator, Program, Statement, UnaryOperator, VarKind,
+};
 use crate::lexer::Token;
 
 /// Parses a complete JavaScript expression from tokens.
@@ -51,7 +53,11 @@ impl<'tokens> Parser<'tokens> {
 
     fn parse_statement(&mut self) -> Result<Statement, String> {
         match self.peek() {
-            Some(Token::Let) | Some(Token::Const) => self.parse_declaration(),
+            Some(Token::Let) | Some(Token::Const) | Some(Token::Var) => self.parse_declaration(),
+            Some(Token::If) => self.parse_if_statement(),
+            Some(Token::While) => self.parse_while_statement(),
+            Some(Token::Function) => self.parse_function_declaration(),
+            Some(Token::Return) => self.parse_return_statement(),
             Some(Token::LeftBrace) => self.parse_block(),
             _ => {
                 let expression = self.parse_expression(0)?;
@@ -67,7 +73,9 @@ impl<'tokens> Parser<'tokens> {
         let kind = match self.advance() {
             Some(Token::Let) => VarKind::Let,
             Some(Token::Const) => VarKind::Const,
-            _ => unreachable!(),
+            Some(Token::Var) => VarKind::Var,
+            Some(token) => return Err(format!("Expected a declaration keyword, found {token:?}")),
+            None => return Err("Expected a declaration keyword".into()),
         };
         let name = match self.advance() {
             Some(Token::Identifier(name)) => name.clone(),
@@ -102,18 +110,102 @@ impl<'tokens> Parser<'tokens> {
         Ok(Statement::Block(body))
     }
 
+    fn parse_if_statement(&mut self) -> Result<Statement, String> {
+        self.advance();
+        self.expect(Token::LeftParen)?;
+        let condition = self.parse_expression(0)?;
+        self.expect(Token::RightParen)?;
+        let then_branch = self.parse_statement()?;
+        let else_branch = if matches!(self.peek(), Some(Token::Else)) {
+            self.advance();
+            Some(self.parse_statement()?)
+        } else {
+            None
+        };
+        Ok(Statement::If {
+            condition,
+            then_branch: Box::new(then_branch),
+            else_branch: else_branch.map(Box::new),
+        })
+    }
+
+    fn parse_while_statement(&mut self) -> Result<Statement, String> {
+        self.advance();
+        self.expect(Token::LeftParen)?;
+        let condition = self.parse_expression(0)?;
+        self.expect(Token::RightParen)?;
+        let body = self.parse_statement()?;
+        Ok(Statement::While {
+            condition,
+            body: Box::new(body),
+        })
+    }
+
+    fn parse_function_declaration(&mut self) -> Result<Statement, String> {
+        self.advance();
+        let name = self.parse_binding_name()?;
+        self.expect(Token::LeftParen)?;
+        let mut params = Vec::new();
+        if !matches!(self.peek(), Some(Token::RightParen)) {
+            loop {
+                params.push(self.parse_binding_name()?);
+                if !matches!(self.peek(), Some(Token::Comma)) {
+                    break;
+                }
+                self.advance();
+            }
+        }
+        self.expect(Token::RightParen)?;
+        let body = self.parse_block()?;
+        let Statement::Block(body) = body else {
+            return Err("Expected a block as the function body".into());
+        };
+        Ok(Statement::FunctionDeclaration { name, params, body })
+    }
+
+    fn parse_return_statement(&mut self) -> Result<Statement, String> {
+        self.advance();
+        let value = if matches!(
+            self.peek(),
+            None | Some(Token::Semicolon) | Some(Token::RightBrace)
+        ) {
+            None
+        } else {
+            Some(self.parse_expression(0)?)
+        };
+        if matches!(self.peek(), Some(Token::Semicolon)) {
+            self.advance();
+        }
+        Ok(Statement::Return(value))
+    }
+
+    fn parse_binding_name(&mut self) -> Result<String, String> {
+        match self.advance() {
+            Some(Token::Identifier(name)) => Ok(name.clone()),
+            Some(token) => Err(format!("Expected a binding name, found {token:?}")),
+            None => Err("Expected a binding name".into()),
+        }
+    }
+
     pub(super) fn parse_expression(&mut self, minimum_precedence: u8) -> Result<Expr, String> {
         let mut left = self.parse_unary()?;
-        while let Some(operator) = self.peek().and_then(binary_operator) {
-            if operator.precedence() < minimum_precedence {
+        while let Some((precedence, operator)) = self.peek().and_then(infix_operator) {
+            if precedence < minimum_precedence {
                 break;
             }
             self.advance();
-            let right = self.parse_expression(operator.precedence() + 1)?;
-            left = Expr::Binary {
-                left: Box::new(left),
-                operator,
-                right: Box::new(right),
+            let right = self.parse_expression(precedence + 1)?;
+            left = match operator {
+                InfixOperator::Binary(operator) => Expr::Binary {
+                    left: Box::new(left),
+                    operator,
+                    right: Box::new(right),
+                },
+                InfixOperator::Logical(operator) => Expr::Logical {
+                    left: Box::new(left),
+                    operator,
+                    right: Box::new(right),
+                },
             };
         }
         if minimum_precedence == 0 && matches!(self.peek(), Some(Token::Assign)) {
@@ -152,21 +244,42 @@ impl<'tokens> Parser<'tokens> {
     }
 
     fn parse_primary(&mut self) -> Result<Expr, String> {
-        match self.advance() {
-            Some(Token::Number(number)) => Ok(Expr::Number(*number)),
-            Some(Token::String(text)) => Ok(Expr::String(text.clone())),
-            Some(Token::True) => Ok(Expr::Boolean(true)),
-            Some(Token::False) => Ok(Expr::Boolean(false)),
-            Some(Token::Null) => Ok(Expr::Null),
-            Some(Token::Identifier(name)) => Ok(Expr::Identifier(name.clone())),
+        let mut expression = match self.advance() {
+            Some(Token::Number(number)) => Expr::Number(*number),
+            Some(Token::String(text)) => Expr::String(text.clone()),
+            Some(Token::True) => Expr::Boolean(true),
+            Some(Token::False) => Expr::Boolean(false),
+            Some(Token::Null) => Expr::Null,
+            Some(Token::Undefined) => Expr::Undefined,
+            Some(Token::Identifier(name)) => Expr::Identifier(name.clone()),
             Some(Token::LeftParen) => {
                 let expression = self.parse_expression(0)?;
                 self.expect(Token::RightParen)?;
-                Ok(expression)
+                expression
             }
-            Some(token) => Err(format!("Expected an expression, found {token:?}")),
-            None => Err("Expected an expression".into()),
+            Some(token) => return Err(format!("Expected an expression, found {token:?}")),
+            None => return Err("Expected an expression".into()),
+        };
+
+        while matches!(self.peek(), Some(Token::LeftParen)) {
+            self.advance();
+            let mut arguments = Vec::new();
+            if !matches!(self.peek(), Some(Token::RightParen)) {
+                loop {
+                    arguments.push(self.parse_expression(0)?);
+                    if !matches!(self.peek(), Some(Token::Comma)) {
+                        break;
+                    }
+                    self.advance();
+                }
+            }
+            self.expect(Token::RightParen)?;
+            expression = Expr::Call {
+                callee: Box::new(expression),
+                arguments,
+            };
         }
+        Ok(expression)
     }
 
     fn expect(&mut self, expected: Token) -> Result<(), String> {
@@ -186,10 +299,29 @@ fn binary_operator(token: &Token) -> Option<BinaryOperator> {
         Token::Divide => BinaryOperator::Divide,
         Token::EqualEqual => BinaryOperator::Equal,
         Token::BangEqual => BinaryOperator::NotEqual,
+        Token::StrictEqual => BinaryOperator::StrictEqual,
+        Token::StrictBangEqual => BinaryOperator::StrictNotEqual,
         Token::LessThan => BinaryOperator::Less,
+        Token::LessEqual => BinaryOperator::LessEqual,
         Token::GreaterThan => BinaryOperator::Greater,
+        Token::GreaterEqual => BinaryOperator::GreaterEqual,
         _ => return None,
     })
+}
+
+#[derive(Clone, Copy)]
+enum InfixOperator {
+    Binary(BinaryOperator),
+    Logical(LogicalOperator),
+}
+
+fn infix_operator(token: &Token) -> Option<(u8, InfixOperator)> {
+    match token {
+        Token::OrOr => Some((1, InfixOperator::Logical(LogicalOperator::Or))),
+        Token::AndAnd => Some((2, InfixOperator::Logical(LogicalOperator::And))),
+        _ => binary_operator(token)
+            .map(|operator| (operator.precedence() + 2, InfixOperator::Binary(operator))),
+    }
 }
 
 impl BinaryOperator {
