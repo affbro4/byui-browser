@@ -11,7 +11,7 @@ fn evaluates_arithmetic() {
     let tokens = lexer::tokenize("42 + 10");
     let ast = parser::parse(&tokens).expect("expression should parse");
 
-    assert_eq!(runtime::evaluate(&ast), Value::Number(52.0));
+    assert_eq!(runtime::evaluate(&ast), Ok(Value::Number(52.0)));
 }
 
 #[test]
@@ -19,7 +19,7 @@ fn evaluates_chained_addition() {
     let tokens = lexer::tokenize("42 + 10 + 8");
     let ast = parser::parse(&tokens).expect("expression should parse");
 
-    assert_eq!(runtime::evaluate(&ast), Value::Number(60.0));
+    assert_eq!(runtime::evaluate(&ast), Ok(Value::Number(60.0)));
 }
 
 #[test]
@@ -27,7 +27,7 @@ fn evaluates_other_arithmetic_operators() {
     let tokens = lexer::tokenize("42 - 10 * 2 / 4");
     let ast = parser::parse(&tokens).expect("expression should parse");
 
-    assert_eq!(runtime::evaluate(&ast), Value::Number(37.0));
+    assert_eq!(runtime::evaluate(&ast), Ok(Value::Number(37.0)));
 }
 
 #[test]
@@ -75,13 +75,8 @@ fn invalid_bindings_return_errors() {
 }
 
 #[test]
-fn unsupported_program_evaluation_returns_errors() {
-    for source in [
-        "f();",
-        "if (true) {}",
-        "while (false) {}",
-        "function f() { return; }",
-    ] {
+fn runtime_errors_are_returned_not_panics() {
+    for source in ["f();", "let x = 1; x();", "undefined()", "(1 + 2)()"] {
         assert!(eval(source).is_err(), "{source}");
     }
 }
