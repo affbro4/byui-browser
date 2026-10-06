@@ -15,13 +15,13 @@ use crate::{ElementData, HTMLDocument, Node, NodeKind};
 //     }
 // }
 
-impl std::fmt::Display for SelectorError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.message)
-    }
-}
+// impl std::fmt::Display for SelectorError {
+//     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         formatter.write_str(&self.message)
+//     }
+// }
 
-impl std::error::Error for SelectorError {}
+// impl std::error::Error for SelectorError {}
 
 pub trait Query {
     fn query(&self, selector: &str) -> Vec<Node>;
