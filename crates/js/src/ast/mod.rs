@@ -1,3 +1,5 @@
+//! Owned abstract syntax tree produced by the parser and run by the runtime.
+
 /// An owned JavaScript program in source order.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Program {
@@ -124,9 +126,11 @@ pub enum UnaryOperator {
     Negate,
     /// `!x`
     Not,
+    /// `~x`
+    BitwiseNot,
 }
 
-/// Arithmetic and comparison operations represented by the AST.
+/// Arithmetic, bitwise, and comparison operations represented by the AST.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinaryOperator {
     /// `+` operator.
@@ -137,8 +141,20 @@ pub enum BinaryOperator {
     Multiply,
     /// `/` operator.
     Divide,
-    /// `%` operator. Currently unavailable from the lexer and parser.
+    /// `%` operator; the result takes the sign of the dividend.
     Remainder,
+    /// `&` operator on 32-bit integers.
+    BitwiseAnd,
+    /// `|` operator on 32-bit integers.
+    BitwiseOr,
+    /// `^` operator on 32-bit integers.
+    BitwiseXor,
+    /// `<<` operator; the shift count is taken modulo 32.
+    LeftShift,
+    /// `>>` sign-propagating operator; the shift count is taken modulo 32.
+    SignedRightShift,
+    /// `>>>` zero-fill operator; the shift count is taken modulo 32.
+    UnsignedRightShift,
     /// `<` operator.
     Less,
     /// `<=` operator.
