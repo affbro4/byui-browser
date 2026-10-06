@@ -110,4 +110,15 @@ mod tests {
             ])
         );
     }
+
+    #[test]
+    fn supports_every_ascii_letter() {
+        for uppercase in b'A'..=b'Z' {
+            let uppercase = char::from(uppercase);
+            let lowercase = uppercase.to_ascii_lowercase();
+
+            assert!(glyph(uppercase).is_some(), "missing glyph for {uppercase}");
+            assert_eq!(glyph(lowercase), glyph(uppercase));
+        }
+    }
 }
