@@ -1,4 +1,4 @@
-//! Toolbar with disabled Back/Forward buttons; navigation is not implemented.
+//! Toolbar with disabled Back/Forward/Reload buttons; navigation is not implemented.
 
 const HEIGHT: f64 = 48.0; // Logical pixels, including the bottom divider.
 const BACKGROUND: u32 = 0x00efefef;
@@ -11,10 +11,11 @@ const BUTTON_SIZE: f64 = 32.0;
 const BUTTON_TOP: f64 = 8.0;
 const BACK_LEFT: f64 = 8.0;
 const FORWARD_LEFT: f64 = 48.0;
+const RELOAD_LEFT: f64 = 88.0;
 
 /// Paints a full-width toolbar and blank content into an RGB window buffer.
 /// `width` is in device pixels; `scale_factor` converts logical to device pixels.
-/// Both arrow buttons are disabled placeholders with no click or keyboard action.
+/// All buttons are disabled placeholders with no click or keyboard action.
 pub(super) fn draw(pixels: &mut [u32], width: usize, scale_factor: f64) {
     pixels.fill(CONTENT);
     if width == 0 {
@@ -35,6 +36,10 @@ pub(super) fn draw(pixels: &mut [u32], width: usize, scale_factor: f64) {
                 if let Some(color) = button_pixel(local_x, local_y, forward) {
                     *pixel = color;
                 }
+            }
+            let reload_x = (x as f64 + 0.5 - RELOAD_LEFT * scale_factor) / scale_factor;
+            if let Some(color) = reload_pixel(reload_x, local_y) {
+                *pixel = color;
             }
         }
     }
@@ -59,9 +64,79 @@ fn button_pixel(x: f64, y: f64, forward: bool) -> Option<u32> {
     })
 }
 
+// UI-only Reload placeholder; page loading and reload actions are not implemented.
+fn reload_pixel(x: f64, y: f64) -> Option<u32> {
+    if !(0.0..BUTTON_SIZE).contains(&x) || !(0.0..BUTTON_SIZE).contains(&y) {
+        return None;
+    }
+    if x <= 1.0 || x >= BUTTON_SIZE - 1.0 || y <= 1.0 || y >= BUTTON_SIZE - 1.0 {
+        return Some(BUTTON_BORDER);
+    }
+    let dx = x - 16.0;
+    let dy = y - 16.0;
+    let radius_squared = dx * dx + dy * dy;
+    // Leave a gap at the upper right and end the clockwise arc with an arrowhead.
+    let arc = (49.0..=81.0).contains(&radius_squared) && !(dx > 0.0 && dy < -2.0);
+    let head = (10.0..=17.0).contains(&y) && (x - 24.0).abs() <= (17.0 - y) * 0.65;
+    Some(if arc || head {
+        DISABLED_ARROW
+    } else {
+        BUTTON_BACKGROUND
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reload_follows_forward_and_scales_with_the_existing_buttons() {
+        assert_eq!(RELOAD_LEFT - FORWARD_LEFT, FORWARD_LEFT - BACK_LEFT);
+        for scale in [1.0, 1.5, 2.0] {
+            let width = (140.0 * scale) as usize;
+            let mut pixels = vec![0; width * (60.0 * scale) as usize];
+            draw(&mut pixels, width, scale);
+            let sample =
+                |x: f64, y: f64| pixels[(y * scale) as usize * width + (x * scale) as usize];
+            assert_eq!(sample(RELOAD_LEFT, BUTTON_TOP), BUTTON_BORDER);
+            assert_eq!(
+                sample(RELOAD_LEFT + 2.0, BUTTON_TOP + 2.0),
+                BUTTON_BACKGROUND
+            );
+            assert_eq!(sample(RELOAD_LEFT + 8.0, BUTTON_TOP + 16.0), DISABLED_ARROW);
+            assert_eq!(
+                sample(RELOAD_LEFT + 24.0, BUTTON_TOP + 12.0),
+                DISABLED_ARROW
+            );
+            assert_eq!(
+                sample(RELOAD_LEFT + 16.0, BUTTON_TOP + 16.0),
+                BUTTON_BACKGROUND
+            );
+            assert_eq!(
+                sample(RELOAD_LEFT + 19.0, BUTTON_TOP + 9.0),
+                BUTTON_BACKGROUND
+            );
+            assert_eq!(sample(RELOAD_LEFT - 4.0, BUTTON_TOP + 16.0), BACKGROUND);
+            assert_eq!(
+                sample(RELOAD_LEFT + BUTTON_SIZE, BUTTON_TOP + 16.0),
+                BACKGROUND
+            );
+        }
+    }
+
+    #[test]
+    fn clipping_reload_does_not_change_existing_buttons_or_content() {
+        let mut full = vec![0; 140 * 60];
+        draw(&mut full, 140, 1.0);
+        for width in [88, 90, 105, 119] {
+            let mut clipped = vec![0; width * 60];
+            draw(&mut clipped, width, 1.0);
+            for (y, row) in clipped.chunks(width).enumerate() {
+                assert_eq!(row, &full[y * 140..y * 140 + width]);
+            }
+            assert!(clipped[width * 48..].iter().all(|p| *p == CONTENT));
+        }
+    }
 
     #[test]
     fn toolbar_spans_width_and_reserves_content_at_each_scale() {
