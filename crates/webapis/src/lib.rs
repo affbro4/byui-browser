@@ -240,7 +240,7 @@ mod tests {
         register_fetch(&mut realm, controller).unwrap();
 
         assert_eq!(
-            realm.call_global("fetch", &[]).unwrap_err().to_string(),
+            realm.evaluate_script("fetch()").unwrap_err().to_string(),
             "fetch() expects exactly one URL string"
         );
     }

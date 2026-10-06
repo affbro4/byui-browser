@@ -2,7 +2,9 @@
 //!
 //! Run ignored tests with `cargo test -p js -- --ignored` to see the backlog.
 
-use js::{Value, eval, lexer, parse, parser, runtime};
+use std::sync::Arc;
+
+use js::{HostFunction, JsError, Realm, Value, eval, lexer, parse, parser, runtime};
 
 #[test]
 fn evaluates_arithmetic() {
@@ -90,4 +92,31 @@ fn program_parser_preserves_runtime_short_circuit_behavior() {
     assert_eq!(eval("true || missing"), Ok(Value::Boolean(true)));
     assert_eq!(eval("true && 2"), Ok(Value::Number(2.0)));
     assert_eq!(eval("false || 3"), Ok(Value::Number(3.0)));
+}
+
+#[test]
+fn realm_evaluates_call_arguments_before_invoking_host_function() {
+    let mut realm = Realm::new();
+    let function: HostFunction = Arc::new(|arguments| Ok(arguments[0].clone()));
+    realm.register_global_function("capture", function).unwrap();
+
+    assert_eq!(
+        realm.evaluate_script("capture(1 + 2)"),
+        Ok(Value::Number(3.0))
+    );
+}
+
+#[test]
+fn realm_returns_parser_and_host_errors_as_js_errors() {
+    let realm = Realm::new();
+    assert!(realm.evaluate_script("missing()").is_err());
+
+    let mut realm = Realm::new();
+    let function: HostFunction = Arc::new(|_| Err(JsError::new("host failed")));
+    realm.register_global_function("fail", function).unwrap();
+
+    assert_eq!(
+        realm.evaluate_script("fail()"),
+        Err(JsError::new("host failed"))
+    );
 }

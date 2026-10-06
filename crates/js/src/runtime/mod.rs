@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::ast::{
     BinaryOperator, Expr, LogicalOperator, Program, Statement, UnaryOperator, VarKind,
 };
-use crate::{JsError, JsResult, Value};
+use crate::{JsError, JsResult, Realm, Value};
 
 #[derive(Clone, Debug)]
 struct Binding {
@@ -78,30 +78,44 @@ impl Environment {
 /// Evaluates a parsed program with a fresh lexical environment.
 pub fn evaluate_program(program: &Program) -> JsResult<Value> {
     let mut environment = Environment::new();
-    execute_statements(&mut environment, &program.body)
+    execute_statements(&mut environment, &program.body, None)
 }
 
-fn execute_statements(environment: &mut Environment, statements: &[Statement]) -> JsResult<Value> {
+/// Evaluates a parsed program with access to a realm's registered globals.
+pub fn evaluate_program_in_realm(program: &Program, realm: &Realm) -> JsResult<Value> {
+    let mut environment = Environment::new();
+    execute_statements(&mut environment, &program.body, Some(realm))
+}
+
+fn execute_statements(
+    environment: &mut Environment,
+    statements: &[Statement],
+    realm: Option<&Realm>,
+) -> JsResult<Value> {
     let mut result = Value::Undefined;
     for statement in statements {
-        result = execute_statement(environment, statement)?;
+        result = execute_statement(environment, statement, realm)?;
     }
     Ok(result)
 }
 
-fn execute_statement(environment: &mut Environment, statement: &Statement) -> JsResult<Value> {
+fn execute_statement(
+    environment: &mut Environment,
+    statement: &Statement,
+    realm: Option<&Realm>,
+) -> JsResult<Value> {
     match statement {
-        Statement::Expression(expression) => evaluate_in(expression, environment),
+        Statement::Expression(expression) => evaluate_in(expression, environment, realm),
         Statement::VariableDeclaration { kind, name, init } => {
             let value = init.as_ref().map_or(Ok(Value::Undefined), |expression| {
-                evaluate_in(expression, environment)
+                evaluate_in(expression, environment, realm)
             })?;
             environment.declare(name, value, *kind)?;
             Ok(Value::Undefined)
         }
         Statement::Block(statements) => {
             environment.push_scope();
-            let result = execute_statements(environment, statements);
+            let result = execute_statements(environment, statements, realm);
             environment.pop_scope();
             result
         }
@@ -111,11 +125,15 @@ fn execute_statement(environment: &mut Environment, statement: &Statement) -> Js
     }
 }
 
-fn evaluate_in(expression: &Expr, environment: &mut Environment) -> JsResult<Value> {
+fn evaluate_in(
+    expression: &Expr,
+    environment: &mut Environment,
+    realm: Option<&Realm>,
+) -> JsResult<Value> {
     match expression {
         Expr::Identifier(name) => environment.get(name),
         Expr::Assign { name, value } => {
-            let value = evaluate_in(value, environment)?;
+            let value = evaluate_in(value, environment, realm)?;
             environment.set(name, value)
         }
         Expr::Number(number) => Ok(Value::Number(*number)),
@@ -124,7 +142,7 @@ fn evaluate_in(expression: &Expr, environment: &mut Environment) -> JsResult<Val
         Expr::Null => Ok(Value::Null),
         Expr::Undefined => Ok(Value::Undefined),
         Expr::Unary { operator, operand } => {
-            let value = evaluate_in(operand, environment)?;
+            let value = evaluate_in(operand, environment, realm)?;
             Ok(match operator {
                 UnaryOperator::Negate => {
                     Value::Number(to_number(&value).map_or(f64::NAN, |number| -number))
@@ -137,8 +155,8 @@ fn evaluate_in(expression: &Expr, environment: &mut Environment) -> JsResult<Val
             operator,
             right,
         } => {
-            let left = evaluate_in(left, environment)?;
-            let right = evaluate_in(right, environment)?;
+            let left = evaluate_in(left, environment, realm)?;
+            let right = evaluate_in(right, environment, realm)?;
             binary(*operator, left, right)
         }
         Expr::Logical {
@@ -146,20 +164,29 @@ fn evaluate_in(expression: &Expr, environment: &mut Environment) -> JsResult<Val
             operator,
             right,
         } => {
-            let left = evaluate_in(left, environment)?;
+            let left = evaluate_in(left, environment, realm)?;
             let use_right = match operator {
                 LogicalOperator::And => is_truthy(&left),
                 LogicalOperator::Or => !is_truthy(&left),
             };
             if use_right {
-                evaluate_in(right, environment)
+                evaluate_in(right, environment, realm)
             } else {
                 Ok(left)
             }
         }
-        Expr::Call { .. } => Err(JsError::new(
-            "function calls are not supported by the tree-walk interpreter",
-        )),
+        Expr::Call { callee, arguments } => {
+            let Expr::Identifier(name) = callee.as_ref() else {
+                return Err(JsError::new("callee is not a global host function"));
+            };
+            let arguments = arguments
+                .iter()
+                .map(|argument| evaluate_in(argument, environment, realm))
+                .collect::<JsResult<Vec<_>>>()?;
+            realm
+                .ok_or_else(|| JsError::new(format!("global function `{name}` is not defined")))?
+                .call_global(name, &arguments)
+        }
     }
 }
 
@@ -203,5 +230,5 @@ fn is_truthy(value: &Value) -> bool {
 
 /// Evaluates an expression without declarations, using a fresh environment.
 pub fn evaluate(expression: &Expr) -> Value {
-    evaluate_in(expression, &mut Environment::new()).unwrap_or(Value::Undefined)
+    evaluate_in(expression, &mut Environment::new(), None).unwrap_or(Value::Undefined)
 }

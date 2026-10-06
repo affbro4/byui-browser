@@ -87,24 +87,14 @@ impl Realm {
         function(arguments)
     }
 
-    /// Evaluates the minimal call expression needed by the first Web API slice.
+    /// Parses and evaluates JavaScript source in this realm.
     ///
-    /// The full VM is still future work. This deliberately supports
-    /// only a global identifier followed by an empty argument list, such as
-    /// `print()`, so the host-function path can be exercised end to end.
+    /// Global host functions are invoked by the same tree-walk runtime used
+    /// for other parsed expressions. Arguments are evaluated before the host
+    /// function is called.
     pub fn evaluate_script(&self, source: &str) -> JsResult<Value> {
-        let expression = source.trim().trim_end_matches(';').trim();
-        let call = expression
-            .strip_suffix(')')
-            .and_then(|prefix| prefix.strip_suffix('('))
-            .ok_or_else(|| JsError::new("expected a function call expression"))?;
-        let name = call.trim();
-
-        if name.is_empty() || name.contains(char::is_whitespace) {
-            return Err(JsError::new("expected a global function name"));
-        }
-
-        self.call_global(name, &[])
+        let program = parse(source).map_err(|error| JsError::new(error.to_string()))?;
+        runtime::evaluate_program_in_realm(&program, self)
     }
 }
 
