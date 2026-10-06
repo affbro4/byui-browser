@@ -10,8 +10,8 @@ mod selector;
 mod tokenizer;
 
 pub use dom::{
-    Attribute, Dom, ElementData, HTMLDocument, HTMLElement, HtmlDocument, LegacyNode, Location,
-    Namespace, Node, NodeId, NodeKind, QuirksMode, SourceSpan, Token,
+    Attribute, Dom, DomError, ElementData, HTMLDocument, HTMLElement, HtmlDocument, LegacyNode,
+    Location, Namespace, Node, NodeId, NodeKind, QuirksMode, SourceSpan, Token,
 };
 pub use parser::parse_raw_html;
 pub use selector::{Query, SelectorError};

@@ -1,5 +1,23 @@
 use common::ids::NodeId as CommonNodeId;
 use std::collections::BTreeMap;
+use std::fmt;
+
+/// Error returned when a DOM operation receives an invalid element name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DomError {
+    /// The supplied name is not a valid element local name.
+    InvalidCharacter,
+}
+
+impl fmt::Display for DomError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidCharacter => formatter.write_str("InvalidCharacterError"),
+        }
+    }
+}
+
+impl std::error::Error for DomError {}
 
 /// A stable index into an [`HtmlDocument`] arena.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -120,6 +138,24 @@ impl HtmlDocument {
         self.nodes.get(id.0)
     }
 
+    /// Creates a detached HTML element using the DOM `createElement` rules.
+    ///
+    /// ASCII uppercase characters are lowercased because this arena represents
+    /// an HTML document. The returned node has no parent, no attributes, and
+    /// the HTML namespace. Invalid names return [`DomError::InvalidCharacter`].
+    pub fn create_element(&mut self, local_name: &str) -> Result<NodeId, DomError> {
+        if !is_valid_element_local_name(local_name) {
+            return Err(DomError::InvalidCharacter);
+        }
+
+        let element = ElementData {
+            name: local_name.to_ascii_lowercase(),
+            namespace: Namespace::Html,
+            attributes: Vec::new(),
+        };
+        Ok(self.push_node(NodeKind::Element(element), None))
+    }
+
     pub fn text_content(&self, id: NodeId) -> String {
         fn collect(document: &HtmlDocument, id: NodeId, output: &mut String) {
             let Some(node) = document.node(id) else {
@@ -164,6 +200,40 @@ impl HtmlDocument {
         // node itself is not an element and therefore is never a candidate.
         find_in_tree(self, self.root, value)
     }
+}
+
+fn is_ascii_whitespace(character: char) -> bool {
+    matches!(character, '\t' | '\n' | '\x0c' | '\r' | ' ')
+}
+
+fn is_ascii_alpha(character: char) -> bool {
+    character.is_ascii_alphabetic()
+}
+
+fn is_valid_element_local_name(name: &str) -> bool {
+    let mut characters = name.chars();
+    let Some(first) = characters.next() else {
+        return false;
+    };
+
+    if is_ascii_alpha(first) {
+        return characters.all(|character| {
+            !is_ascii_whitespace(character)
+                && character != '\0'
+                && character != '/'
+                && character != '>'
+        });
+    }
+
+    if first != ':' && first != '_' && (first as u32) < 0x80 {
+        return false;
+    }
+
+    characters.all(|character| {
+        character.is_ascii_alphanumeric()
+            || matches!(character, '-' | '.' | ':' | '_')
+            || (character as u32) >= 0x80
+    })
 }
 
 pub type HTMLDocument = HtmlDocument;

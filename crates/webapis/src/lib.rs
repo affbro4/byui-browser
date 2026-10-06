@@ -75,6 +75,8 @@ pub fn register_fetch(realm: &mut Realm, controller: Arc<RequestController>) -> 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Element {
     pub node: NodeId,
+    /// The element's HTML local name, normalized to ASCII lowercase.
+    pub local_name: String,
     /// Value of the `id` attribute, if any.
     pub id_attr: Option<String>,
 }
@@ -83,12 +85,16 @@ pub struct Element {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Document {
     elements: Vec<Element>,
+    html_document: HtmlDocument,
 }
 
 impl Document {
     /// An empty document.
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            elements: Vec::new(),
+            html_document: HtmlDocument::new(),
+        }
     }
 
     /// Creates a script-visible document from the HTML document tree.
@@ -108,6 +114,7 @@ impl Document {
                             .map(|attribute| attribute.value.clone());
                         elements.push(Element {
                             node: NodeId::new(child.index() as u32),
+                            local_name: element.name.clone(),
                             id_attr,
                         });
                     }
@@ -118,7 +125,34 @@ impl Document {
 
         let mut elements = Vec::new();
         collect(document, document.root, &mut elements);
-        Self { elements }
+        Self {
+            elements,
+            html_document: document.clone(),
+        }
+    }
+
+    /// Implements `document.createElement(localName)` for an HTML document.
+    ///
+    /// The returned element is detached until a later tree mutation appends
+    /// it. Names are validated according to the DOM Standard and normalized
+    /// to ASCII lowercase. Invalid names return `InvalidCharacterError`.
+    pub fn create_element(&mut self, local_name: &str) -> JsResult<Element> {
+        let node = self
+            .html_document
+            .create_element(local_name)
+            .map_err(|error| JsError::new(error.to_string()))?;
+        let element = match self.html_document.node(node) {
+            Some(html::Node {
+                kind: NodeKind::Element(element),
+                ..
+            }) => element,
+            _ => return Err(JsError::new("created node is not an element")),
+        };
+        Ok(Element {
+            node: NodeId::new(node.index() as u32),
+            local_name: element.name.clone(),
+            id_attr: None,
+        })
     }
 
     /// `document.getElementById(id)`.
@@ -276,6 +310,30 @@ mod tests {
             .expect("nested element");
         assert_eq!(element.node.index(), 2);
         assert_eq!(document.get_element_by_id("NESTED"), None);
+    }
+
+    #[test]
+    fn create_element_lowercases_and_returns_a_detached_html_element() {
+        let mut document = super::Document::new();
+
+        let element = document.create_element("CuStOm-Widget").unwrap();
+
+        assert_eq!(element.local_name, "custom-widget");
+        assert_eq!(element.node.index(), 1);
+        assert_eq!(element.id_attr, None);
+    }
+
+    #[test]
+    fn create_element_rejects_invalid_local_names() {
+        let mut document = super::Document::new();
+
+        for name in ["", "1div", "div name", "div/name", "div>"] {
+            assert_eq!(
+                document.create_element(name).unwrap_err().to_string(),
+                "InvalidCharacterError",
+                "expected {name:?} to be rejected"
+            );
+        }
     }
 
     #[test]
