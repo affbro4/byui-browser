@@ -6,8 +6,11 @@
 //! and Reload, the address field, New Tab, and the menu only show hover and
 //! press feedback. The address text is a fixed label for the welcome page.
 
-use ab_glyph::{Font, FontVec, PxScale, ScaleFont, VariableFont, point};
+use ab_glyph::{Font, FontVec, PxScale, ScaleFont, point};
 use tiny_skia::{Color, FillRule, Paint, Path, PathBuilder, Pixmap, Rect, Stroke, Transform};
+
+#[cfg(target_os = "macos")]
+use ab_glyph::VariableFont;
 
 /// Toolbar height in logical pixels; the page card starts directly below it.
 pub(super) const TOOLBAR_HEIGHT: f64 = 52.0;
