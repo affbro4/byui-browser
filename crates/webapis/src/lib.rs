@@ -13,7 +13,7 @@ pub mod local_storage;
 use std::sync::Arc;
 
 use common::ids::NodeId;
-use html::{HtmlDocument, NodeKind};
+use html::{HTMLDocument, NodeKind};
 use js::{HostFunction, JsError, JsResult, Realm, Value};
 use net::{Request, RequestController};
 
@@ -92,8 +92,8 @@ impl Document {
     }
 
     /// Creates a script-visible document from the HTML document tree.
-    pub fn from_html_document(document: &HtmlDocument) -> Self {
-        fn collect(document: &HtmlDocument, parent: html::NodeId, elements: &mut Vec<Element>) {
+    pub fn from_html_document(document: &HTMLDocument) -> Self {
+        fn collect(document: &HTMLDocument, parent: html::NodeId, elements: &mut Vec<Element>) {
             let Some(node) = document.node(parent) else {
                 return;
             };

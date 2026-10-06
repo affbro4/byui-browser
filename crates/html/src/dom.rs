@@ -116,7 +116,7 @@ impl HTMLDocument {
     }
 
     pub fn get_element_by_id(&self, value: &str) -> Option<NodeId> {
-        fn find_in_tree(document: &HtmlDocument, parent: NodeId, value: &str) -> Option<NodeId> {
+        fn find_in_tree(document: &HTMLDocument, parent: NodeId, value: &str) -> Option<NodeId> {
             let children = document.node(parent)?.children.clone();
 
             for child in children {
