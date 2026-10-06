@@ -83,7 +83,7 @@ pub struct Element {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Document {
     elements: Vec<Element>,
-    source_document: Option<HtmlDocument>,
+    source_document: Option<HTMLDocument>,
 }
 
 impl Document {
@@ -149,7 +149,7 @@ impl Document {
         let mut matches = Vec::new();
 
         fn collect(
-            document: &HtmlDocument,
+            document: &HTMLDocument,
             parent: html::NodeId,
             selectors: &[SimpleSelector],
             matches: &mut Vec<NodeId>,
