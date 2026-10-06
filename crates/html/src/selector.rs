@@ -1,6 +1,5 @@
 use crate::{ElementData, HTMLDocument, Node, NodeKind};
 
-//// A selector parsing error returned by [`HTMLDocument::query_selector`].
 // #[derive(Debug, Clone, PartialEq, Eq)]
 // pub struct SelectorError {
 //     /// A description of the invalid selector.
