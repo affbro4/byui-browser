@@ -12,6 +12,11 @@ const BUTTON_TOP: f64 = 8.0;
 const BACK_LEFT: f64 = 8.0;
 const FORWARD_LEFT: f64 = 48.0;
 
+/// Returns the toolbar's height in device pixels for a window's display scale.
+pub(super) fn height_in_pixels(scale_factor: f64) -> usize {
+    (HEIGHT * scale_factor).round() as usize
+}
+
 /// Paints a full-width toolbar and blank content into an RGB window buffer.
 /// `width` is in device pixels; `scale_factor` converts logical to device pixels.
 /// Both arrow buttons are disabled placeholders with no click or keyboard action.
@@ -20,7 +25,7 @@ pub(super) fn draw(pixels: &mut [u32], width: usize, scale_factor: f64) {
     if width == 0 {
         return;
     }
-    let toolbar_height = (HEIGHT * scale_factor).round() as usize;
+    let toolbar_height = height_in_pixels(scale_factor);
     let divider_height = (scale_factor.round() as usize).max(1);
     for (y, row) in pixels.chunks_mut(width).take(toolbar_height).enumerate() {
         row.fill(if y >= toolbar_height.saturating_sub(divider_height) {

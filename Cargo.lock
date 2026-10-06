@@ -89,6 +89,10 @@ dependencies = [
 name = "browser-macos"
 version = "0.1.0"
 dependencies = [
+ "html",
+ "layout",
+ "paint",
+ "render",
  "softbuffer",
  "winit",
 ]
@@ -1840,6 +1844,7 @@ name = "storage"
 version = "0.1.0"
 dependencies = [
  "common",
+ "security",
 ]
 
 [[package]]
