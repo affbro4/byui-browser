@@ -7,7 +7,7 @@ use render::Compositor;
 fn main() {
     let width = 320;
     let height = 180;
-    let box_rect = create_rectangle(40.0, 35.0, 240.0, 110.0);
+    let box_rect = create_rectangle(0.0, 0.0, width as f32, height as f32);
     let border = 12.0;
     let fill = Color {
         r: 190,
@@ -34,7 +34,7 @@ fn main() {
     }];
     add_border(&mut items, box_rect, border, border_color);
     items.push(DisplayItem::Text {
-        x: box_rect.x + 33.0,
+        x: box_rect.x + 89.0,
         y: box_rect.y + 49.0,
         text: "Hello Mars, We Are Earthlings".to_owned(),
         color: text_color,
