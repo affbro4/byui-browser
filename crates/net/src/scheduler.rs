@@ -9,7 +9,8 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 
 use crate::{
-    error::RequestError, request::Request, response::StreamingResponse, transport::Transport,
+    error::RequestError, request::PreparedRequest, response::StreamingResponse,
+    transport::Transport,
 };
 
 /// Relative importance assigned to a request by the network scheduler.
@@ -60,7 +61,7 @@ impl RequestScheduler {
     /// fully consumed or dropped.
     pub(crate) async fn submit(
         &self,
-        request: Request,
+        request: PreparedRequest,
         _priority: RequestPriority,
     ) -> Result<StreamingResponse, RequestError> {
         let permit = self

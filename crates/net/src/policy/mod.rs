@@ -14,13 +14,13 @@ impl RequestPolicy {
     ///
     /// Validation happens before cookies are attached or a scheduler permit is
     /// acquired, so invalid requests fail without side effects or network work.
-    pub(crate) fn validate_request(&self, request: &Request) -> Result<(), RequestError> {
+    pub(crate) fn validate_request(&self, request: &Request) -> Result<reqwest::Url, RequestError> {
         let url = reqwest::Url::parse(&request.url)
             .map_err(|_| RequestError::InvalidUrl(request.url.clone()))?;
         if !matches!(url.scheme(), "http" | "https") {
             return Err(RequestError::UnsupportedScheme(url.scheme().to_owned()));
         }
-        Ok(())
+        Ok(url)
     }
 
     /// Validates response policy after transport headers have arrived.
