@@ -1,4 +1,3 @@
-/// A stable index into an [`HTMLDocument`] arena.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NodeId(pub usize);
 
