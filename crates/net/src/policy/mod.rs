@@ -65,6 +65,40 @@ mod tests {
     }
 
     #[test]
+    fn rejects_relative_urls() {
+        let error = RequestPolicy
+            .validate_request(&Request::get("/relative/path"))
+            .unwrap_err();
+
+        assert!(matches!(error, RequestError::InvalidUrl(url) if url == "/relative/path"));
+    }
+
+    #[test]
+    fn rejects_urls_with_invalid_ports() {
+        for value in [
+            "http://example.test:not-a-port/",
+            "http://example.test:65536/",
+        ] {
+            let error = RequestPolicy
+                .validate_request(&Request::get(value))
+                .unwrap_err();
+
+            assert!(matches!(error, RequestError::InvalidUrl(url) if url == value));
+        }
+    }
+
+    #[test]
+    fn accepts_uppercase_http_urls_and_returns_normalized_url() {
+        let url = RequestPolicy
+            .validate_request(&Request::get("HTTP://EXAMPLE.TEST/Path"))
+            .unwrap();
+
+        assert_eq!(url.scheme(), "http");
+        assert_eq!(url.host_str(), Some("example.test"));
+        assert_eq!(url.path(), "/Path");
+    }
+
+    #[test]
     fn rejects_non_http_schemes() {
         let error = RequestPolicy
             .validate_request(&Request::get("ftp://example.test/file"))

@@ -86,6 +86,11 @@ impl CachedResponse {
 
 /// Creates the cache key used to distinguish method and URL combinations.
 pub(crate) fn cache_key(request: &Request, url: &Url) -> String {
+<<<<<<< Updated upstream
+=======
+    let mut url = url.clone();
+    url.set_fragment(None);
+>>>>>>> Stashed changes
     format!("{} {url}", request.method)
 }
 
@@ -176,6 +181,35 @@ mod tests {
 
         let url = Url::parse(&get.url).unwrap();
         assert_ne!(cache_key(&get, &url), cache_key(&head, &url));
+<<<<<<< Updated upstream
+=======
+    }
+
+    #[test]
+    fn cache_key_ignores_url_fragments() {
+        let with_fragment = Request::get("https://example.test/resource#section");
+        let without_fragment = Request::get("https://example.test/resource");
+        let with_fragment_url = Url::parse(&with_fragment.url).unwrap();
+        let without_fragment_url = Url::parse(&without_fragment.url).unwrap();
+
+        assert_eq!(
+            cache_key(&with_fragment, &with_fragment_url),
+            cache_key(&without_fragment, &without_fragment_url)
+        );
+    }
+
+    #[test]
+    fn cache_key_uses_normalized_url_strings() {
+        let uppercase = Request::get("HTTP://EXAMPLE.TEST/resource");
+        let normalized = Request::get("http://example.test/resource");
+        let uppercase_url = Url::parse(&uppercase.url).unwrap();
+        let normalized_url = Url::parse(&normalized.url).unwrap();
+
+        assert_eq!(
+            cache_key(&uppercase, &uppercase_url),
+            cache_key(&normalized, &normalized_url)
+        );
+>>>>>>> Stashed changes
     }
 
     #[test]
