@@ -83,6 +83,7 @@ pub struct Element {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Document {
     elements: Vec<Element>,
+    source_document: Option<HtmlDocument>,
 }
 
 impl Document {
@@ -118,7 +119,10 @@ impl Document {
 
         let mut elements = Vec::new();
         collect(document, document.root, &mut elements);
-        Self { elements }
+        Self {
+            elements,
+            source_document: Some(document.clone()),
+        }
     }
 
     /// `document.getElementById(id)`.
@@ -128,6 +132,177 @@ impl Document {
             .iter()
             .find(|element| element.id_attr.as_deref() == Some(id))
     }
+
+    /// Returns a static snapshot of matching element descendants in tree order.
+    ///
+    /// The document itself is not a candidate, detached nodes are excluded,
+    /// and each matching node is returned once even if multiple selectors in
+    /// a selector list match it. An invalid or unsupported selector returns a
+    /// [`SelectorError`], corresponding to the DOM `SyntaxError` exception.
+    /// Supported selectors are element names, `*`, IDs, classes, compound
+    /// combinations of those forms, and comma-separated selector lists.
+    pub fn query_selector_all(&self, selector: &str) -> Result<Vec<NodeId>, SelectorError> {
+        let selectors = parse_selector_list(selector)?;
+        let Some(document) = &self.source_document else {
+            return Ok(Vec::new());
+        };
+        let mut matches = Vec::new();
+
+        fn collect(
+            document: &HtmlDocument,
+            parent: html::NodeId,
+            selectors: &[SimpleSelector],
+            matches: &mut Vec<NodeId>,
+        ) {
+            let Some(parent_node) = document.node(parent) else {
+                return;
+            };
+            for child in &parent_node.children {
+                let Some(node) = document.node(*child) else {
+                    continue;
+                };
+                if let NodeKind::Element(element) = &node.kind {
+                    if selectors.iter().any(|selector| selector.matches(element)) {
+                        matches.push(NodeId::new(child.index() as u32));
+                    }
+                    collect(document, *child, selectors, matches);
+                }
+            }
+        }
+
+        collect(document, document.root, &selectors, &mut matches);
+        Ok(matches)
+    }
+}
+
+/// Error returned when a `query_selector_all` selector is invalid or unsupported.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectorError {
+    /// Human-readable explanation of the selector error.
+    pub message: String,
+}
+
+impl SelectorError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for SelectorError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for SelectorError {}
+
+#[derive(Debug)]
+struct SimpleSelector {
+    element_name: Option<String>,
+    id: Option<String>,
+    classes: Vec<String>,
+}
+
+impl SimpleSelector {
+    fn matches(&self, element: &html::ElementData) -> bool {
+        if let Some(name) = &self.element_name
+            && element.name != *name
+        {
+            return false;
+        }
+        if let Some(id) = &self.id
+            && !element
+                .attributes
+                .iter()
+                .any(|attribute| attribute.name == "id" && attribute.value == *id)
+        {
+            return false;
+        }
+        self.classes.iter().all(|class| {
+            element.attributes.iter().any(|attribute| {
+                attribute.name == "class"
+                    && attribute
+                        .value
+                        .split_whitespace()
+                        .any(|value| value == class)
+            })
+        })
+    }
+}
+
+fn parse_selector_list(selector: &str) -> Result<Vec<SimpleSelector>, SelectorError> {
+    selector
+        .split(',')
+        .map(str::trim)
+        .map(parse_simple_selector)
+        .collect()
+}
+
+fn parse_simple_selector(selector: &str) -> Result<SimpleSelector, SelectorError> {
+    if selector.is_empty() || selector.chars().any(char::is_whitespace) {
+        return Err(SelectorError::new("unsupported or empty selector"));
+    }
+    let mut parsed = SimpleSelector {
+        element_name: None,
+        id: None,
+        classes: Vec::new(),
+    };
+    let mut remaining = selector;
+    if let Some(first) = remaining.chars().next()
+        && first != '#'
+        && first != '.'
+        && first != '*'
+    {
+        let end = remaining.find(['#', '.']).unwrap_or(remaining.len());
+        let name = &remaining[..end];
+        if !is_identifier(name) {
+            return Err(SelectorError::new("invalid element selector"));
+        }
+        parsed.element_name = Some(name.to_ascii_lowercase());
+        remaining = &remaining[end..];
+    } else if remaining.starts_with('*') {
+        remaining = &remaining[1..];
+    }
+    while !remaining.is_empty() {
+        let marker = remaining.as_bytes()[0] as char;
+        if marker != '#' && marker != '.' {
+            return Err(SelectorError::new("invalid selector syntax"));
+        }
+        let value_end = remaining[1..]
+            .find(['#', '.'])
+            .map_or(remaining.len(), |index| index + 1);
+        let value = &remaining[1..value_end];
+        if !is_identifier(value) {
+            return Err(SelectorError::new("invalid selector name"));
+        }
+        if marker == '#' {
+            if parsed.id.replace(value.to_owned()).is_some() {
+                return Err(SelectorError::new("selector has multiple IDs"));
+            }
+        } else {
+            parsed.classes.push(value.to_owned());
+        }
+        remaining = &remaining[value_end..];
+    }
+    if parsed.element_name.is_none()
+        && parsed.id.is_none()
+        && parsed.classes.is_empty()
+        && selector != "*"
+    {
+        return Err(SelectorError::new(
+            "selector must contain a simple selector",
+        ));
+    }
+    Ok(parsed)
+}
+
+fn is_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
 }
 
 /// Handle returned by `setTimeout`.
@@ -178,6 +353,7 @@ impl TimerQueue {
 #[cfg(test)]
 mod tests {
     use super::{ConsoleSink, fetch, print, register_fetch, register_print};
+    use common::ids::NodeId;
     use html::parse_raw_html;
     use js::{Realm, Value};
     use net::{Config, RequestController};
@@ -276,6 +452,38 @@ mod tests {
             .expect("nested element");
         assert_eq!(element.node.index(), 2);
         assert_eq!(document.get_element_by_id("NESTED"), None);
+    }
+
+    #[test]
+    fn document_query_selector_all_returns_matching_descendants_in_tree_order() {
+        let html_document = parse_raw_html(
+            "<main><article class='post target'><span class='target'></span></article><p class='target'></p></main>"
+                .to_owned(),
+        );
+        let document = super::Document::from_html_document(&html_document);
+
+        assert_eq!(
+            document.query_selector_all(".target, article").unwrap(),
+            vec![NodeId::new(2), NodeId::new(3), NodeId::new(4)]
+        );
+        assert_eq!(
+            document.query_selector_all("*").unwrap(),
+            vec![
+                NodeId::new(1),
+                NodeId::new(2),
+                NodeId::new(3),
+                NodeId::new(4)
+            ]
+        );
+    }
+
+    #[test]
+    fn document_query_selector_all_rejects_invalid_selectors() {
+        let document = super::Document::from_html_document(&parse_raw_html("<div></div>".into()));
+
+        assert!(document.query_selector_all("").is_err());
+        assert!(document.query_selector_all("div,").is_err());
+        assert_eq!(document.query_selector_all(".missing").unwrap(), Vec::new());
     }
 
     #[test]
