@@ -1,5 +1,28 @@
 use crate::{ElementData, HTMLDocument, Node, NodeKind};
 
+/// A selector parsing error returned by [`HTMLDocument::query_selector`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectorError {
+    /// A description of the invalid selector.
+    pub message: String,
+}
+
+impl SelectorError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for SelectorError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for SelectorError {}
+
 pub trait Query {
     fn query(&self, selector: &str) -> Vec<Node>;
 
