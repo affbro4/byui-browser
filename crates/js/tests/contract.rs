@@ -1,6 +1,7 @@
 //! Public-contract tests for `js`.
 //!
-//! Run ignored tests with `cargo test -p js -- --ignored` to see the backlog.
+//! Covers the source-level `parse`/`eval` entry points and the token-level
+//! parser and runtime helpers.
 
 use std::sync::Arc;
 
@@ -79,6 +80,14 @@ fn runtime_errors_are_returned_not_panics() {
     for source in ["f();", "let x = 1; x();", "undefined()", "(1 + 2)()"] {
         assert!(eval(source).is_err(), "{source}");
     }
+}
+
+#[test]
+fn evaluate_reports_errors_instead_of_hiding_them() {
+    let tokens = lexer::tokenize("missing + 1");
+    let ast = parser::parse(&tokens).expect("expression should parse");
+
+    assert!(runtime::evaluate(&ast).is_err());
 }
 
 #[test]
