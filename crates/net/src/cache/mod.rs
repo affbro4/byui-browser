@@ -86,11 +86,8 @@ impl CachedResponse {
 
 /// Creates the cache key used to distinguish method and URL combinations.
 pub(crate) fn cache_key(request: &Request, url: &Url) -> String {
-<<<<<<< Updated upstream
-=======
     let mut url = url.clone();
     url.set_fragment(None);
->>>>>>> Stashed changes
     format!("{} {url}", request.method)
 }
 
@@ -181,8 +178,6 @@ mod tests {
 
         let url = Url::parse(&get.url).unwrap();
         assert_ne!(cache_key(&get, &url), cache_key(&head, &url));
-<<<<<<< Updated upstream
-=======
     }
 
     #[test]
@@ -209,7 +204,6 @@ mod tests {
             cache_key(&uppercase, &uppercase_url),
             cache_key(&normalized, &normalized_url)
         );
->>>>>>> Stashed changes
     }
 
     #[test]
