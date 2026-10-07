@@ -271,6 +271,28 @@ fn unbounded_recursion_is_an_error_not_a_crash() {
 }
 
 #[test]
+fn endless_loops_stop_at_the_step_limit() {
+    let program = js::parse("let i = 0; while (true) { i = i + 1; }").unwrap();
+    let error = js::runtime::evaluate_program_with_step_limit(&program, 1_000).unwrap_err();
+    assert_eq!(error.message, "Script exceeded the evaluation step limit");
+
+    // The default limit applies to every entry point.
+    assert!(eval("while (true) {}").is_err());
+    assert!(Realm::new().evaluate_script("while (true) {}").is_err());
+}
+
+#[test]
+fn step_limit_counts_statements_and_expressions() {
+    let program = js::parse("1 + 2").unwrap();
+    // The statement, the addition, and its two operands.
+    assert_eq!(
+        js::runtime::evaluate_program_with_step_limit(&program, 4),
+        number(3.0)
+    );
+    assert!(js::runtime::evaluate_program_with_step_limit(&program, 3).is_err());
+}
+
+#[test]
 fn moderately_deep_recursion_succeeds() {
     assert_eq!(
         eval("function f(n) { if (n > 0) { return f(n - 1) + 1; } return 0; } f(1000)"),

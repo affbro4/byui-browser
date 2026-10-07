@@ -16,6 +16,8 @@
 //!   recursion, such as a function that calls itself forever, returns a
 //!   "Maximum call stack size exceeded" error once that stack is nearly full,
 //!   instead of overflowing the native stack.
+//! - Each evaluation has a step budget (see [`DEFAULT_STEP_LIMIT`]), so
+//!   endless loops fail with an error instead of running forever.
 
 mod conversions;
 
@@ -34,6 +36,14 @@ use conversions::{
 };
 
 const STACK_OVERFLOW: &str = "Maximum call stack size exceeded";
+
+const STEP_LIMIT_EXCEEDED: &str = "Script exceeded the evaluation step limit";
+
+/// Steps a script may take by default, where one step is evaluating one
+/// statement or expression. This stops scripts such as `while (true) {}`
+/// from hanging the engine thread. It is a stand-in for a time-based or
+/// host-controlled interrupt, which does not exist yet.
+pub const DEFAULT_STEP_LIMIT: u64 = 10_000_000;
 
 /// Locks a scope. No code panics while holding the lock, so a poisoned lock
 /// still holds consistent bindings and is recovered rather than propagated.
@@ -282,9 +292,17 @@ impl fmt::Display for Function {
 /// Evaluates a parsed program with a fresh environment, returning its
 /// completion value (the value of the last value-producing statement).
 ///
-/// Runs on the engine thread described in the module documentation.
+/// Runs on the engine thread described in the module documentation and
+/// stops after [`DEFAULT_STEP_LIMIT`] steps.
 pub fn evaluate_program(program: &Program) -> JsResult<Value> {
-    evaluate_program_with_globals(program, &HashMap::new())
+    evaluate_program_with_step_limit(program, DEFAULT_STEP_LIMIT)
+}
+
+/// Evaluates a program like [`evaluate_program`], but fails with a
+/// step-limit error once `step_limit` statements and expressions have been
+/// evaluated. A limit of `0` rejects every non-empty program.
+pub fn evaluate_program_with_step_limit(program: &Program, step_limit: u64) -> JsResult<Value> {
+    evaluate_program_with_globals(program, &HashMap::new(), step_limit)
 }
 
 /// Evaluates a program with `globals` installed as callable functions in a
@@ -292,6 +310,7 @@ pub fn evaluate_program(program: &Program) -> JsResult<Value> {
 pub(crate) fn evaluate_program_with_globals(
     program: &Program,
     globals: &HashMap<String, HostFunction>,
+    step_limit: u64,
 ) -> JsResult<Value> {
     with_engine_stack(|| {
         let global_scope: ScopeRef = Arc::default();
@@ -309,7 +328,7 @@ pub(crate) fn evaluate_program_with_globals(
             );
         }
         let script_scope = child_scope(&global_scope);
-        let completion = Interpreter::new().run_body(&script_scope, &program.body)?;
+        let completion = Interpreter::new(step_limit).run_body(&script_scope, &program.body)?;
         Ok(match completion {
             Completion::Normal(value) => value.unwrap_or(Value::Undefined),
             Completion::Return(value) => value,
@@ -319,9 +338,10 @@ pub(crate) fn evaluate_program_with_globals(
 
 /// Evaluates one expression in a fresh, empty environment.
 ///
-/// Runs on the engine thread described in the module documentation.
+/// Runs on the engine thread described in the module documentation and
+/// stops after [`DEFAULT_STEP_LIMIT`] steps.
 pub fn evaluate(expression: &Expr) -> JsResult<Value> {
-    with_engine_stack(|| Interpreter::new().evaluate(expression, &Arc::default()))
+    with_engine_stack(|| Interpreter::new(DEFAULT_STEP_LIMIT).evaluate(expression, &Arc::default()))
 }
 
 /// Statement result; `Normal(None)` is an empty completion, such as from a
@@ -333,17 +353,26 @@ enum Completion {
 
 struct Interpreter {
     stack: StackGuard,
+    steps_remaining: u64,
 }
 
 impl Interpreter {
-    /// Creates an interpreter measuring stack use from the caller's frame.
-    fn new() -> Self {
+    /// Creates an interpreter measuring stack use from the caller's frame and
+    /// allowing `step_limit` evaluation steps.
+    fn new(step_limit: u64) -> Self {
         Self {
             stack: StackGuard::new(),
+            steps_remaining: step_limit,
         }
     }
 
+    /// Charges one step and checks stack use before evaluating a statement or
+    /// expression.
     fn guarded<T>(&mut self, action: impl FnOnce(&mut Self) -> JsResult<T>) -> JsResult<T> {
+        if self.steps_remaining == 0 {
+            return Err(JsError::new(STEP_LIMIT_EXCEEDED));
+        }
+        self.steps_remaining -= 1;
         if self.stack.exhausted() {
             return Err(JsError::new(STACK_OVERFLOW));
         }

@@ -129,7 +129,7 @@ impl Realm {
     /// the next.
     pub fn evaluate_script(&self, source: &str) -> JsResult<Value> {
         let program = parse(source).map_err(|error| JsError::new(error.to_string()))?;
-        runtime::evaluate_program_with_globals(&program, &self.globals)
+        runtime::evaluate_program_with_globals(&program, &self.globals, runtime::DEFAULT_STEP_LIMIT)
     }
 }
 
