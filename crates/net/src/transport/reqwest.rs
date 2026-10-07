@@ -8,7 +8,7 @@ use reqwest::Client;
 use crate::{
     config::Config,
     error::RequestError,
-    request::Request,
+    request::PreparedRequest,
     response::{ResponseBody, StreamingResponse},
 };
 
@@ -24,7 +24,7 @@ pub(crate) trait Transport: Send + Sync {
     /// returned [`StreamingResponse`].
     fn send(
         &self,
-        request: Request,
+        request: PreparedRequest,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<StreamingResponse, RequestError>> + Send>,
     >;
@@ -63,14 +63,13 @@ impl ReqwestTransport {
 impl Transport for ReqwestTransport {
     fn send(
         &self,
-        request: Request,
+        request: PreparedRequest,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<StreamingResponse, RequestError>> + Send>,
     > {
         let client = self.client.clone();
         Box::pin(async move {
-            let url = reqwest::Url::parse(&request.url)
-                .map_err(|_| RequestError::InvalidUrl(request.url.clone()))?;
+            let PreparedRequest { request, url } = request;
             let mut builder = client.request(request.method, url).headers(request.headers);
             if let Some(body) = request.body {
                 builder = builder.body(body);
