@@ -51,18 +51,55 @@ impl fmt::Display for Value {
     }
 }
 
+/// The broad category of a JavaScript engine error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JsErrorCategory {
+    /// The source could not be parsed.
+    Syntax,
+    /// The program performed an invalid operation.
+    Runtime,
+    /// The program exceeded a configured execution limit.
+    Limit,
+    /// A registered host function reported a failure.
+    Host,
+}
+
 /// Errors raised while parsing, evaluating, or invoking host functions.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JsError {
+    /// The broad category of the failure.
+    pub category: JsErrorCategory,
     /// Human-readable description of the failure.
     pub message: String,
+    /// The interpreter operation that failed, when known.
+    pub context: Option<String>,
 }
 
 impl JsError {
     /// Creates an error carrying `message`.
     pub fn new(message: impl Into<String>) -> Self {
+        Self::runtime(message)
+    }
+
+    /// Creates a runtime error carrying `message`.
+    pub fn runtime(message: impl Into<String>) -> Self {
         Self {
+            category: JsErrorCategory::Runtime,
             message: message.into(),
+            context: None,
+        }
+    }
+
+    /// Creates a categorized error with an interpreter operation as context.
+    pub fn with_context(
+        category: JsErrorCategory,
+        message: impl Into<String>,
+        context: impl Into<String>,
+    ) -> Self {
+        Self {
+            category,
+            message: message.into(),
+            context: Some(context.into()),
         }
     }
 }
@@ -82,15 +119,24 @@ pub type JsResult<T> = Result<T, JsError>;
 pub type HostFunction = Arc<dyn Fn(&[Value]) -> JsResult<Value> + Send + Sync>;
 
 /// A JavaScript execution realm with a global host-function table.
-#[derive(Default)]
 pub struct Realm {
     globals: HashMap<String, HostFunction>,
+    limits: runtime::ExecutionLimits,
+}
+
+impl Default for Realm {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Realm {
     /// Creates a realm with no registered globals.
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            globals: HashMap::new(),
+            limits: runtime::ExecutionLimits::default(),
+        }
     }
 
     /// Registers a host function under a global JavaScript name.
@@ -121,6 +167,16 @@ impl Realm {
         function(arguments)
     }
 
+    /// Replaces the limits used by future script evaluations.
+    pub fn set_execution_limits(&mut self, limits: runtime::ExecutionLimits) {
+        self.limits = limits;
+    }
+
+    /// Returns the limits used by this realm.
+    pub fn execution_limits(&self) -> runtime::ExecutionLimits {
+        self.limits
+    }
+
     /// Parses and evaluates a script with the registered host functions in
     /// scope, returning its completion value.
     ///
@@ -128,8 +184,10 @@ impl Realm {
     /// fresh script scope: bindings declared by one script are not visible to
     /// the next.
     pub fn evaluate_script(&self, source: &str) -> JsResult<Value> {
-        let program = parse(source).map_err(|error| JsError::new(error.to_string()))?;
-        runtime::evaluate_program_with_globals(&program, &self.globals)
+        let program = parse(source).map_err(|error| {
+            JsError::with_context(JsErrorCategory::Syntax, error.to_string(), "parsing script")
+        })?;
+        runtime::evaluate_program_with_globals(&program, &self.globals, self.limits)
     }
 }
 
@@ -164,6 +222,16 @@ pub fn parse(source: &str) -> Result<Program, parser::ParseError> {
 /// declarations, blocks, `if`, `while`, functions, calls, and `return`. Syntax
 /// errors and runtime errors are both returned as [`JsError`].
 pub fn eval(source: &str) -> JsResult<Value> {
-    let program = parse(source).map_err(|error| JsError::new(error.to_string()))?;
+    let program = parse(source).map_err(|error| {
+        JsError::with_context(JsErrorCategory::Syntax, error.to_string(), "parsing script")
+    })?;
     runtime::evaluate_program(&program)
+}
+
+/// Parses and evaluates source text using caller-provided execution limits.
+pub fn eval_with_limits(source: &str, limits: runtime::ExecutionLimits) -> JsResult<Value> {
+    let program = parse(source).map_err(|error| {
+        JsError::with_context(JsErrorCategory::Syntax, error.to_string(), "parsing script")
+    })?;
+    runtime::evaluate_program_with_limits(&program, limits)
 }

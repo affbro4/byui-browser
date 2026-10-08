@@ -11,7 +11,7 @@ use crate::{
     cors::CorsChecker,
     error::RequestError,
     policy::RequestPolicy,
-    request::{CacheMode, Request},
+    request::{CacheMode, PreparedRequest, Request},
     response::{Response, ResponseBody, StreamingResponse},
     scheduler::{RequestPriority, RequestScheduler},
     transport::reqwest_transport,
@@ -96,7 +96,7 @@ impl RequestController {
     /// is inserted into the cache only after the caller consumes the stream to
     /// completion; dropped or failed streams are not cached.
     pub async fn fetch_stream(&self, request: Request) -> Result<StreamingResponse, RequestError> {
-        self.inner.policy.validate_request(&request)?;
+        let url = self.inner.policy.validate_request(&request)?;
 
         let cacheable = request.is_cacheable_method();
         if cacheable
@@ -105,7 +105,7 @@ impl RequestController {
                 CacheMode::Default | CacheMode::OnlyIfCached
             )
         {
-            if let Some(response) = self.inner.cache.get(&request) {
+            if let Some(response) = self.inner.cache.get(&request, &url) {
                 return Ok(StreamingResponse {
                     status: response.status,
                     headers: response.headers,
@@ -128,7 +128,13 @@ impl RequestController {
         let response = self
             .inner
             .scheduler
-            .submit(request.clone(), RequestPriority::Normal)
+            .submit(
+                PreparedRequest {
+                    request: request.clone(),
+                    url: url.clone(),
+                },
+                RequestPriority::Normal,
+            )
             .await?;
 
         let response_metadata = Response {
@@ -151,6 +157,7 @@ impl RequestController {
                 response,
                 self.inner.cache.clone(),
                 request,
+                url,
             ));
         }
         Ok(response)
@@ -167,6 +174,8 @@ struct CacheCapture {
     cache: ResponseCache,
     /// Original request used to compute the cache key.
     request: Request,
+    /// Parsed request URL used to compute the cache key.
+    request_url: reqwest::Url,
     /// Response metadata retained while the body is consumed.
     status: reqwest::StatusCode,
     headers: reqwest::header::HeaderMap,
@@ -182,6 +191,7 @@ fn with_cache_capture(
     mut response: StreamingResponse,
     cache: ResponseCache,
     request: Request,
+    request_url: reqwest::Url,
 ) -> StreamingResponse {
     let status = response.status;
     let headers = response.headers.clone();
@@ -190,6 +200,7 @@ fn with_cache_capture(
     let capture = CacheCapture {
         cache,
         request,
+        request_url,
         status,
         headers,
         url,
@@ -207,6 +218,7 @@ fn with_cache_capture(
                     if let Some(capture) = capture {
                         capture.cache.insert(
                             &capture.request,
+                            &capture.request_url,
                             &Response {
                                 status: capture.status,
                                 headers: capture.headers,
