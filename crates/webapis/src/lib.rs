@@ -13,6 +13,7 @@ pub mod local_storage;
 use std::sync::Arc;
 
 use common::ids::NodeId;
+use html::{HTMLDocument, NodeKind};
 use js::{HostFunction, JsError, JsResult, Realm, Value};
 use net::{Request, RequestController};
 
@@ -73,40 +74,271 @@ pub fn register_fetch(realm: &mut Realm, controller: Arc<RequestController>) -> 
 // types, names, and module layout however your crate's public API needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Element {
+    /// Index of this element in its document's DOM arena.
     pub node: NodeId,
+    /// The element's HTML local name, normalized to ASCII lowercase.
+    pub local_name: String,
     /// Value of the `id` attribute, if any.
     pub id_attr: Option<String>,
 }
 
 /// Script-visible `document` object.
-///
-/// Wraps the HTML team's DOM; the real binding will hold a handle, not a copy.
-// NOT AUTHORITATIVE: placeholder from the Scrum of Scrums team.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Document {
     elements: Vec<Element>,
+    source_document: Option<HTMLDocument>,
 }
 
 impl Document {
     /// An empty document.
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            elements: Vec::new(),
+            source_document: None,
+        }
+    }
+
+    /// Creates a script-visible document from the HTML document tree.
+    pub fn from_html_document(document: &HTMLDocument) -> Self {
+        fn collect(document: &HTMLDocument, parent: html::NodeId, elements: &mut Vec<Element>) {
+            let Some(node) = document.node(parent) else {
+                return;
+            };
+
+            for child in &node.children {
+                if let Some(node) = document.node(*child) {
+                    if let NodeKind::Element(element) = &node.kind {
+                        let id_attr = element
+                            .attributes
+                            .iter()
+                            .find(|attribute| attribute.name == "id")
+                            .map(|attribute| attribute.value.clone());
+                        elements.push(Element {
+                            node: NodeId::new(child.index() as u32),
+                            local_name: element.name.clone(),
+                            id_attr,
+                        });
+                    }
+                    collect(document, *child, elements);
+                }
+            }
+        }
+
+        let mut elements = Vec::new();
+        collect(document, document.root, &mut elements);
+        Self {
+            elements,
+            source_document: Some(document.clone()),
+        }
+    }
+
+    /// Implements `document.createElement(localName)` for an HTML document.
+    ///
+    /// The returned element is detached until a later tree mutation appends
+    /// it. Names are validated according to the DOM Standard and normalized
+    /// to ASCII lowercase. Invalid names return `InvalidCharacterError`.
+    /// This Rust API owns the created node in the document's private arena.
+    /// JavaScript method bindings and custom-element options are not supported.
+    pub fn create_element(&mut self, local_name: &str) -> JsResult<Element> {
+        let document = self.source_document.get_or_insert_with(HTMLDocument::new);
+
+        let node = document
+            .create_element(local_name)
+            .map_err(|error| JsError::new(error.to_string()))?;
+
+        let element = match document.node(node) {
+            Some(html::Node {
+                kind: NodeKind::Element(element),
+                ..
+            }) => element,
+            _ => return Err(JsError::new("created node is not an element")),
+        };
+
+        Ok(Element {
+            node: NodeId::new(node.index() as u32),
+            local_name: element.name.clone(),
+            id_attr: None,
+        })
     }
 
     /// `document.getElementById(id)`.
     ///
-    /// Currently only handles the empty document.
-    // NOT AUTHORITATIVE: placeholder from the Scrum of Scrums team. Reshape the
-    // signature however your crate's public API needs.
     pub fn get_element_by_id(&self, id: &str) -> Option<&Element> {
-        if self.elements.is_empty() {
-            return None;
-        }
-        todo!(
-            "TODO(webapis): look up #{id} among {} elements",
-            self.elements.len()
-        )
+        self.elements
+            .iter()
+            .find(|element| element.id_attr.as_deref() == Some(id))
     }
+
+    /// Returns a static snapshot of matching element descendants in tree order.
+    ///
+    /// The document itself is not a candidate, detached nodes are excluded,
+    /// and each matching node is returned once even if multiple selectors in
+    /// a selector list match it. An invalid or unsupported selector returns a
+    /// [`SelectorError`], corresponding to the DOM `SyntaxError` exception.
+    /// Supported selectors are element names, `*`, IDs, classes, compound
+    /// combinations of those forms, and comma-separated selector lists.
+    pub fn query_selector_all(&self, selector: &str) -> Result<Vec<NodeId>, SelectorError> {
+        let selectors = parse_selector_list(selector)?;
+        let Some(document) = &self.source_document else {
+            return Ok(Vec::new());
+        };
+        let mut matches = Vec::new();
+
+        fn collect(
+            document: &HTMLDocument,
+            parent: html::NodeId,
+            selectors: &[SimpleSelector],
+            matches: &mut Vec<NodeId>,
+        ) {
+            let Some(parent_node) = document.node(parent) else {
+                return;
+            };
+            for child in &parent_node.children {
+                let Some(node) = document.node(*child) else {
+                    continue;
+                };
+                if let NodeKind::Element(element) = &node.kind {
+                    if selectors.iter().any(|selector| selector.matches(element)) {
+                        matches.push(NodeId::new(child.index() as u32));
+                    }
+                    collect(document, *child, selectors, matches);
+                }
+            }
+        }
+
+        collect(document, document.root, &selectors, &mut matches);
+        Ok(matches)
+    }
+}
+
+/// Error returned when a `query_selector_all` selector is invalid or unsupported.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectorError {
+    /// Human-readable explanation of the selector error.
+    pub message: String,
+}
+
+impl SelectorError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for SelectorError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for SelectorError {}
+
+#[derive(Debug)]
+struct SimpleSelector {
+    element_name: Option<String>,
+    id: Option<String>,
+    classes: Vec<String>,
+}
+
+impl SimpleSelector {
+    fn matches(&self, element: &html::ElementData) -> bool {
+        if let Some(name) = &self.element_name
+            && element.name != *name
+        {
+            return false;
+        }
+        if let Some(id) = &self.id
+            && !element
+                .attributes
+                .iter()
+                .any(|attribute| attribute.name == "id" && attribute.value == *id)
+        {
+            return false;
+        }
+        self.classes.iter().all(|class| {
+            element.attributes.iter().any(|attribute| {
+                attribute.name == "class"
+                    && attribute
+                        .value
+                        .split_whitespace()
+                        .any(|value| value == class)
+            })
+        })
+    }
+}
+
+fn parse_selector_list(selector: &str) -> Result<Vec<SimpleSelector>, SelectorError> {
+    selector
+        .split(',')
+        .map(str::trim)
+        .map(parse_simple_selector)
+        .collect()
+}
+
+fn parse_simple_selector(selector: &str) -> Result<SimpleSelector, SelectorError> {
+    if selector.is_empty() || selector.chars().any(char::is_whitespace) {
+        return Err(SelectorError::new("unsupported or empty selector"));
+    }
+    let mut parsed = SimpleSelector {
+        element_name: None,
+        id: None,
+        classes: Vec::new(),
+    };
+    let mut remaining = selector;
+    if let Some(first) = remaining.chars().next()
+        && first != '#'
+        && first != '.'
+        && first != '*'
+    {
+        let end = remaining.find(['#', '.']).unwrap_or(remaining.len());
+        let name = &remaining[..end];
+        if !is_identifier(name) {
+            return Err(SelectorError::new("invalid element selector"));
+        }
+        parsed.element_name = Some(name.to_ascii_lowercase());
+        remaining = &remaining[end..];
+    } else if remaining.starts_with('*') {
+        remaining = &remaining[1..];
+    }
+    while !remaining.is_empty() {
+        let marker = remaining.as_bytes()[0] as char;
+        if marker != '#' && marker != '.' {
+            return Err(SelectorError::new("invalid selector syntax"));
+        }
+        let value_end = remaining[1..]
+            .find(['#', '.'])
+            .map_or(remaining.len(), |index| index + 1);
+        let value = &remaining[1..value_end];
+        if !is_identifier(value) {
+            return Err(SelectorError::new("invalid selector name"));
+        }
+        if marker == '#' {
+            if parsed.id.replace(value.to_owned()).is_some() {
+                return Err(SelectorError::new("selector has multiple IDs"));
+            }
+        } else {
+            parsed.classes.push(value.to_owned());
+        }
+        remaining = &remaining[value_end..];
+    }
+    if parsed.element_name.is_none()
+        && parsed.id.is_none()
+        && parsed.classes.is_empty()
+        && selector != "*"
+    {
+        return Err(SelectorError::new(
+            "selector must contain a simple selector",
+        ));
+    }
+    Ok(parsed)
+}
+
+fn is_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
 }
 
 /// Handle returned by `setTimeout`.
@@ -157,6 +389,8 @@ impl TimerQueue {
 #[cfg(test)]
 mod tests {
     use super::{ConsoleSink, fetch, print, register_fetch, register_print};
+    use common::ids::NodeId;
+    use html::parse_raw_html;
     use js::{Realm, Value};
     use net::{Config, RequestController};
     use std::sync::{Arc, Mutex};
@@ -218,7 +452,7 @@ mod tests {
         register_fetch(&mut realm, controller).unwrap();
 
         assert_eq!(
-            realm.call_global("fetch", &[]).unwrap_err().to_string(),
+            realm.evaluate_script("fetch()").unwrap_err().to_string(),
             "fetch() expects exactly one URL string"
         );
     }
@@ -239,6 +473,99 @@ mod tests {
     #[test]
     fn empty_document_has_no_element_by_id() {
         assert_eq!(super::Document::new().get_element_by_id("main"), None);
+    }
+
+    #[test]
+    fn document_get_element_by_id_uses_tree_order_and_exact_matching() {
+        let html_document = parse_raw_html(
+            "<section id='target'><span id='nested'></span></section><p id='nested'></p>"
+                .to_owned(),
+        );
+        let document = super::Document::from_html_document(&html_document);
+
+        let element = document
+            .get_element_by_id("nested")
+            .expect("nested element");
+        assert_eq!(element.node.index(), 2);
+        assert_eq!(document.get_element_by_id("NESTED"), None);
+    }
+
+    #[test]
+    fn create_element_lowercases_and_returns_a_detached_html_element() {
+        let mut document = super::Document::new();
+
+        let element = document.create_element("CuStOm-Widget").unwrap();
+
+        assert_eq!(element.local_name, "custom-widget");
+        assert_eq!(element.node.index(), 1);
+        assert_eq!(element.id_attr, None);
+    }
+
+    #[test]
+    fn create_element_rejects_invalid_local_names() {
+        let mut document = super::Document::new();
+
+        for name in ["", "1div", "div name", "div/name", "div>"] {
+            assert_eq!(
+                document.create_element(name).unwrap_err().to_string(),
+                "InvalidCharacterError",
+                "expected {name:?} to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn created_elements_preserve_parsed_nodes_and_stay_out_of_queries() {
+        let mut document = super::Document::from_html_document(&parse_raw_html(
+            "<div id='existing'></div>".into(),
+        ));
+        let first = document.create_element("DIV").unwrap();
+        let second = document.create_element("span").unwrap();
+        assert_eq!(first.node, NodeId::new(2));
+        assert_eq!(second.node, NodeId::new(3));
+        assert_eq!(
+            document.query_selector_all("*").unwrap(),
+            vec![NodeId::new(1)]
+        );
+        assert_eq!(
+            document.get_element_by_id("existing").unwrap().node,
+            NodeId::new(1)
+        );
+        let source = document.source_document.as_ref().unwrap();
+        assert_eq!(source.node(html::NodeId(2)).unwrap().parent, None);
+        assert_eq!(source.node(html::NodeId(3)).unwrap().parent, None);
+    }
+
+    #[test]
+    fn document_query_selector_all_returns_matching_descendants_in_tree_order() {
+        let html_document = parse_raw_html(
+            "<main><article class='post target'><span class='target'></span></article><p class='target'></p></main>"
+                .to_owned(),
+        );
+        let document = super::Document::from_html_document(&html_document);
+
+        assert_eq!(
+            document.query_selector_all(".target, article").unwrap(),
+            vec![NodeId::new(2), NodeId::new(3), NodeId::new(4)]
+        );
+        assert_eq!(
+            document.query_selector_all("*").unwrap(),
+            vec![
+                NodeId::new(1),
+                NodeId::new(2),
+                NodeId::new(3),
+                NodeId::new(4)
+            ]
+        );
+    }
+
+    #[test]
+    fn document_query_selector_all_rejects_invalid_selectors() {
+        let document = super::Document::from_html_document(&parse_raw_html("<div></div>".into()));
+
+        assert!(document.query_selector_all("").is_err());
+        assert!(document.query_selector_all("div,").is_err());
+        assert_eq!(document.query_selector_all(".missing").unwrap(), Vec::new());
     }
 
     #[test]
