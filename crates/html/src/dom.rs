@@ -114,6 +114,24 @@ impl HTMLDocument {
         self.nodes[parent.0].children.push(child);
     }
 
+    /// Removes `node` from its parent, if it has one.
+    ///
+    /// The removed node and its descendants remain in the document arena with
+    /// their existing stable IDs. Removing a detached node, the document root,
+    /// or an invalid node ID has no effect.
+    pub fn remove(&mut self, node: NodeId) {
+        let Some(parent) = self.node(node).and_then(|node| node.parent) else {
+            return;
+        };
+
+        if let Some(children) = self.nodes.get_mut(parent.0).map(|node| &mut node.children) {
+            children.retain(|child| *child != node);
+        }
+        if let Some(removed) = self.nodes.get_mut(node.0) {
+            removed.parent = None;
+        }
+    }
+
     pub fn node(&self, id: NodeId) -> Option<&Node> {
         self.nodes.get(id.0)
     }

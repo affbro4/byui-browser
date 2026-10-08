@@ -169,6 +169,23 @@ impl Document {
             .find(|element| element.id_attr.as_deref() == Some(id))
     }
 
+    /// Removes an element node from this document's tree.
+    ///
+    /// The node and its descendants remain allocated and retain their stable
+    /// IDs, but they are no longer reachable from the document root. Removing
+    /// a detached node, the document root, or an invalid node ID is a no-op.
+    pub fn remove(&mut self, node: NodeId) {
+        let Some(document) = self.source_document.as_mut() else {
+            return;
+        };
+
+        document.remove(html::NodeId(node.index() as usize));
+        self.elements.clear();
+        let mut elements = Vec::new();
+        collect_elements(document, document.root, &mut elements);
+        self.elements = elements;
+    }
+
     /// Returns a static snapshot of matching element descendants in tree order.
     ///
     /// The document itself is not a candidate, detached nodes are excluded,
@@ -208,6 +225,30 @@ impl Document {
 
         collect(document, document.root, &selectors, &mut matches);
         Ok(matches)
+    }
+}
+
+fn collect_elements(document: &HTMLDocument, parent: html::NodeId, elements: &mut Vec<Element>) {
+    let Some(node) = document.node(parent) else {
+        return;
+    };
+
+    for child in &node.children {
+        if let Some(node) = document.node(*child) {
+            if let NodeKind::Element(element) = &node.kind {
+                let id_attr = element
+                    .attributes
+                    .iter()
+                    .find(|attribute| attribute.name == "id")
+                    .map(|attribute| attribute.value.clone());
+                elements.push(Element {
+                    node: NodeId::new(child.index() as u32),
+                    local_name: element.name.clone(),
+                    id_attr,
+                });
+            }
+            collect_elements(document, *child, elements);
+        }
     }
 }
 
@@ -534,6 +575,35 @@ mod tests {
         let source = document.source_document.as_ref().unwrap();
         assert_eq!(source.node(html::NodeId(2)).unwrap().parent, None);
         assert_eq!(source.node(html::NodeId(3)).unwrap().parent, None);
+    }
+
+    #[test]
+    fn document_remove_detaches_the_node_from_queries() {
+        let html_document = parse_raw_html(
+            "<section><span id='target'></span></section><p id='other'></p>".to_owned(),
+        );
+        let mut document = super::Document::from_html_document(&html_document);
+        let section = NodeId::new(1);
+
+        document.remove(section);
+
+        assert_eq!(document.get_element_by_id("target"), None);
+        assert_eq!(
+            document.get_element_by_id("other").unwrap().node,
+            NodeId::new(3)
+        );
+        assert_eq!(document.query_selector_all("span").unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn document_remove_of_detached_or_root_nodes_is_a_no_op() {
+        let html_document = parse_raw_html("<div id='target'></div>".to_owned());
+        let mut document = super::Document::from_html_document(&html_document);
+
+        document.remove(NodeId::new(99));
+        document.remove(NodeId::new(0));
+
+        assert!(document.get_element_by_id("target").is_some());
     }
 
     #[test]
