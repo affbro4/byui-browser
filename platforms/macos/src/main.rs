@@ -5,6 +5,9 @@
 #[cfg(any(target_os = "macos", test))]
 mod toolbar;
 
+#[cfg(any(target_os = "macos", test))]
+mod content;
+
 #[cfg(target_os = "macos")]
 mod macos {
     use std::num::NonZeroU32;
@@ -72,6 +75,11 @@ mod macos {
                         .expect("failed to resize window surface");
                     let mut buffer = surface.buffer_mut().expect("failed to get window buffer");
                     super::toolbar::draw(&mut buffer, size.width as usize, window.scale_factor());
+                    super::content::draw_demo(
+                        &mut buffer,
+                        size.width as usize,
+                        window.scale_factor(),
+                    );
                     buffer.present().expect("failed to present window buffer");
                 }
                 _ => {}
