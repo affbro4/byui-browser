@@ -7,7 +7,7 @@ use std::{
 };
 
 use reqwest::{
-    StatusCode,
+    StatusCode, Url,
     header::{CACHE_CONTROL, HeaderMap},
 };
 
@@ -21,8 +21,8 @@ pub(crate) struct ResponseCache {
 
 impl ResponseCache {
     /// Returns a fresh cached response for the request, if one exists.
-    pub(crate) fn get(&self, request: &Request) -> Option<Response> {
-        let key = cache_key(request);
+    pub(crate) fn get(&self, request: &Request, url: &Url) -> Option<Response> {
+        let key = cache_key(request, url);
         // Clone the response while the read lock is held, then release the lock
         // before returning so callers never hold cache state during network work.
         let entries = self.entries.read().expect("cache lock poisoned");
@@ -31,7 +31,7 @@ impl ResponseCache {
     }
 
     /// Stores a successful response when its headers provide a positive TTL.
-    pub(crate) fn insert(&self, request: &Request, response: &Response) {
+    pub(crate) fn insert(&self, request: &Request, url: &Url, response: &Response) {
         if !response.status.is_success() {
             return;
         }
@@ -39,7 +39,7 @@ impl ResponseCache {
             return;
         };
         self.entries.write().expect("cache lock poisoned").insert(
-            cache_key(request),
+            cache_key(request, url),
             CachedResponse::from_response(response, ttl),
         );
     }
@@ -85,8 +85,10 @@ impl CachedResponse {
 }
 
 /// Creates the cache key used to distinguish method and URL combinations.
-pub(crate) fn cache_key(request: &Request) -> String {
-    format!("{} {}", request.method, request.url)
+pub(crate) fn cache_key(request: &Request, url: &Url) -> String {
+    let mut url = url.clone();
+    url.set_fragment(None);
+    format!("{} {url}", request.method)
 }
 
 /// Reads a conservative cache lifetime from the response's `Cache-Control` header.
@@ -162,9 +164,10 @@ mod tests {
             from_cache: false,
         };
 
-        cache.insert(&request, &response);
+        let url = Url::parse(&request.url).unwrap();
+        cache.insert(&request, &url, &response);
 
-        assert!(cache.get(&request).is_none());
+        assert!(cache.get(&request, &url).is_none());
     }
 
     #[test]
@@ -173,7 +176,34 @@ mod tests {
         let mut head = get.clone();
         head.method = reqwest::Method::HEAD;
 
-        assert_ne!(cache_key(&get), cache_key(&head));
+        let url = Url::parse(&get.url).unwrap();
+        assert_ne!(cache_key(&get, &url), cache_key(&head, &url));
+    }
+
+    #[test]
+    fn cache_key_ignores_url_fragments() {
+        let with_fragment = Request::get("https://example.test/resource#section");
+        let without_fragment = Request::get("https://example.test/resource");
+        let with_fragment_url = Url::parse(&with_fragment.url).unwrap();
+        let without_fragment_url = Url::parse(&without_fragment.url).unwrap();
+
+        assert_eq!(
+            cache_key(&with_fragment, &with_fragment_url),
+            cache_key(&without_fragment, &without_fragment_url)
+        );
+    }
+
+    #[test]
+    fn cache_key_uses_normalized_url_strings() {
+        let uppercase = Request::get("HTTP://EXAMPLE.TEST/resource");
+        let normalized = Request::get("http://example.test/resource");
+        let uppercase_url = Url::parse(&uppercase.url).unwrap();
+        let normalized_url = Url::parse(&normalized.url).unwrap();
+
+        assert_eq!(
+            cache_key(&uppercase, &uppercase_url),
+            cache_key(&normalized, &normalized_url)
+        );
     }
 
     #[test]
@@ -189,12 +219,15 @@ mod tests {
         };
         let cached = CachedResponse::from_response(&response, Duration::ZERO);
 
-        cache
-            .entries
-            .write()
-            .unwrap()
-            .insert(cache_key(&request), cached);
+        cache.entries.write().unwrap().insert(
+            cache_key(&request, &Url::parse(&request.url).unwrap()),
+            cached,
+        );
 
-        assert!(cache.get(&request).is_none());
+        assert!(
+            cache
+                .get(&request, &Url::parse(&request.url).unwrap())
+                .is_none()
+        );
     }
 }
