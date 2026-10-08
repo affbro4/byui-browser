@@ -74,6 +74,7 @@ pub fn register_fetch(realm: &mut Realm, controller: Arc<RequestController>) -> 
 // types, names, and module layout however your crate's public API needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Element {
+    /// Index of this element in its document's DOM arena.
     pub node: NodeId,
     /// The element's HTML local name, normalized to ASCII lowercase.
     pub local_name: String,
@@ -93,7 +94,7 @@ impl Document {
     pub fn new() -> Self {
         Self {
             elements: Vec::new(),
-            html_document: HtmlDocument::new(),
+            source_document: None,
         }
     }
 
@@ -136,10 +137,10 @@ impl Document {
     /// The returned element is detached until a later tree mutation appends
     /// it. Names are validated according to the DOM Standard and normalized
     /// to ASCII lowercase. Invalid names return `InvalidCharacterError`.
+    /// This Rust API owns the created node in the document's private arena.
+    /// JavaScript method bindings and custom-element options are not supported.
     pub fn create_element(&mut self, local_name: &str) -> JsResult<Element> {
-        let document = self
-            .source_document
-            .get_or_insert_with(HTMLDocument::new);
+        let document = self.source_document.get_or_insert_with(HTMLDocument::new);
 
         let node = document
             .create_element(local_name)
@@ -511,6 +512,31 @@ mod tests {
                 "expected {name:?} to be rejected"
             );
         }
+    }
+
+    #[test]
+    fn created_elements_preserve_parsed_nodes_and_stay_out_of_queries() {
+        let mut document = super::Document::from_html_document(&parse_raw_html(
+            "<div id='existing'></div>".into(),
+        ));
+        let first = document.create_element("DIV").unwrap();
+        let second = document.create_element("span").unwrap();
+        assert_eq!(first.node, NodeId::new(2));
+        assert_eq!(second.node, NodeId::new(3));
+        assert_eq!(
+            document.query_selector_all("*").unwrap(),
+            vec![NodeId::new(1)]
+        );
+        assert_eq!(
+            document.get_element_by_id("existing").unwrap().node,
+            NodeId::new(1)
+        );
+        let source = document.source_document.as_ref().unwrap();
+        assert_eq!(source.node(html::NodeId(2)).unwrap().parent, None);
+        assert_eq!(source.node(html::NodeId(3)).unwrap().parent, None);
+    }
+
+    #[test]
     fn document_query_selector_all_returns_matching_descendants_in_tree_order() {
         let html_document = parse_raw_html(
             "<main><article class='post target'><span class='target'></span></article><p class='target'></p></main>"

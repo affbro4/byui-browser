@@ -15,7 +15,7 @@ fn arena_document_starts_with_a_document_root() {
 
 #[test]
 fn create_element_follows_html_document_rules() {
-    let mut document = HtmlDocument::new();
+    let mut document = HTMLDocument::new();
 
     let element = document.create_element("DiV-Card").expect("valid name");
     let node = document.node(element).expect("created node");
@@ -34,7 +34,7 @@ fn create_element_follows_html_document_rules() {
 
 #[test]
 fn create_element_rejects_invalid_names() {
-    let mut document = HtmlDocument::new();
+    let mut document = HTMLDocument::new();
 
     for name in ["", "1div", "div name", "div/name", "div>"] {
         assert_eq!(

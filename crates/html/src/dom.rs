@@ -1,6 +1,3 @@
-
-use common::ids::NodeId as CommonNodeId;
-use std::collections::BTreeMap;
 use std::fmt;
 
 /// Error returned when a DOM operation receives an invalid element name.
@@ -20,7 +17,7 @@ impl fmt::Display for DomError {
 
 impl std::error::Error for DomError {}
 
-/// A stable index into an [`HtmlDocument`] arena.
+/// A stable index into an [`HTMLDocument`] arena.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NodeId(pub usize);
@@ -126,6 +123,8 @@ impl HTMLDocument {
     /// ASCII uppercase characters are lowercased because this arena represents
     /// an HTML document. The returned node has no parent, no attributes, and
     /// the HTML namespace. Invalid names return [`DomError::InvalidCharacter`].
+    /// The node is owned by this arena; use the returned index with [`Self::node`].
+    /// XML documents and custom-element creation options are not supported.
     pub fn create_element(&mut self, local_name: &str) -> Result<NodeId, DomError> {
         if !is_valid_element_local_name(local_name) {
             return Err(DomError::InvalidCharacter);
@@ -185,7 +184,6 @@ impl HTMLDocument {
     }
 }
 
-
 fn is_ascii_whitespace(character: char) -> bool {
     matches!(character, '\t' | '\n' | '\x0c' | '\r' | ' ')
 }
@@ -218,35 +216,4 @@ fn is_valid_element_local_name(name: &str) -> bool {
             || matches!(character, '-' | '.' | ':' | '_')
             || (character as u32) >= 0x80
     })
-}
-
-pub type HTMLDocument = HtmlDocument;
-
-/// Compatibility projection returned by the original selector API.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HTMLElement {
-    pub id: CommonNodeId,
-    pub name: String,
-    pub attributes: BTreeMap<String, String>,
-    pub parent: Option<CommonNodeId>,
-    pub children: Vec<CommonNodeId>,
-    pub text: String,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct Dom {
-    pub nodes: Vec<LegacyNode>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LegacyNode {
-    pub id: CommonNodeId,
-    pub name: String,
-    pub parent: Option<CommonNodeId>,
-    pub text: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Location {
-    pub url: String,
 }
