@@ -45,6 +45,33 @@ const STEP_LIMIT_EXCEEDED: &str = "Script exceeded the evaluation step limit";
 /// host-controlled interrupt, which does not exist yet.
 pub const DEFAULT_STEP_LIMIT: u64 = 10_000_000;
 
+/// Default maximum number of nested script-function calls.
+pub const DEFAULT_CALL_DEPTH_LIMIT: u64 = 1_024;
+
+/// Default maximum number of `while` iterations in one evaluation.
+pub const DEFAULT_LOOP_ITERATION_LIMIT: u64 = 1_000_000;
+
+/// Resource limits applied independently to each program evaluation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExecutionLimits {
+    /// Maximum number of statements and expressions evaluated.
+    pub step_limit: u64,
+    /// Maximum number of nested script-function calls.
+    pub call_depth_limit: u64,
+    /// Maximum total number of `while` loop iterations.
+    pub loop_iteration_limit: u64,
+}
+
+impl Default for ExecutionLimits {
+    fn default() -> Self {
+        Self {
+            step_limit: DEFAULT_STEP_LIMIT,
+            call_depth_limit: DEFAULT_CALL_DEPTH_LIMIT,
+            loop_iteration_limit: DEFAULT_LOOP_ITERATION_LIMIT,
+        }
+    }
+}
+
 /// Locks a scope. No code panics while holding the lock, so a poisoned lock
 /// still holds consistent bindings and is recovered rather than propagated.
 trait LockScope {
@@ -295,14 +322,25 @@ impl fmt::Display for Function {
 /// Runs on the engine thread described in the module documentation and
 /// stops after [`DEFAULT_STEP_LIMIT`] steps.
 pub fn evaluate_program(program: &Program) -> JsResult<Value> {
-    evaluate_program_with_step_limit(program, DEFAULT_STEP_LIMIT)
+    evaluate_program_with_limits(program, ExecutionLimits::default())
 }
 
 /// Evaluates a program like [`evaluate_program`], but fails with a
 /// step-limit error once `step_limit` statements and expressions have been
 /// evaluated. A limit of `0` rejects every non-empty program.
 pub fn evaluate_program_with_step_limit(program: &Program, step_limit: u64) -> JsResult<Value> {
-    evaluate_program_with_globals(program, &HashMap::new(), step_limit)
+    evaluate_program_with_limits(
+        program,
+        ExecutionLimits {
+            step_limit,
+            ..ExecutionLimits::default()
+        },
+    )
+}
+
+/// Evaluates a program with caller-provided resource limits.
+pub fn evaluate_program_with_limits(program: &Program, limits: ExecutionLimits) -> JsResult<Value> {
+    evaluate_program_with_globals(program, &HashMap::new(), limits)
 }
 
 /// Evaluates a program with `globals` installed as callable functions in a
@@ -310,7 +348,7 @@ pub fn evaluate_program_with_step_limit(program: &Program, step_limit: u64) -> J
 pub(crate) fn evaluate_program_with_globals(
     program: &Program,
     globals: &HashMap<String, HostFunction>,
-    step_limit: u64,
+    limits: ExecutionLimits,
 ) -> JsResult<Value> {
     with_engine_stack(|| {
         let global_scope: ScopeRef = Arc::default();
@@ -328,7 +366,7 @@ pub(crate) fn evaluate_program_with_globals(
             );
         }
         let script_scope = child_scope(&global_scope);
-        let completion = Interpreter::new(step_limit).run_body(&script_scope, &program.body)?;
+        let completion = Interpreter::new(limits).run_body(&script_scope, &program.body)?;
         Ok(match completion {
             Completion::Normal(value) => value.unwrap_or(Value::Undefined),
             Completion::Return(value) => value,
@@ -341,7 +379,9 @@ pub(crate) fn evaluate_program_with_globals(
 /// Runs on the engine thread described in the module documentation and
 /// stops after [`DEFAULT_STEP_LIMIT`] steps.
 pub fn evaluate(expression: &Expr) -> JsResult<Value> {
-    with_engine_stack(|| Interpreter::new(DEFAULT_STEP_LIMIT).evaluate(expression, &Arc::default()))
+    with_engine_stack(|| {
+        Interpreter::new(ExecutionLimits::default()).evaluate(expression, &Arc::default())
+    })
 }
 
 /// Statement result; `Normal(None)` is an empty completion, such as from a
@@ -354,15 +394,21 @@ enum Completion {
 struct Interpreter {
     stack: StackGuard,
     steps_remaining: u64,
+    call_depth: u64,
+    loop_iterations_remaining: u64,
+    call_depth_limit: u64,
 }
 
 impl Interpreter {
     /// Creates an interpreter measuring stack use from the caller's frame and
     /// allowing `step_limit` evaluation steps.
-    fn new(step_limit: u64) -> Self {
+    fn new(limits: ExecutionLimits) -> Self {
         Self {
             stack: StackGuard::new(),
-            steps_remaining: step_limit,
+            steps_remaining: limits.step_limit,
+            call_depth: 0,
+            loop_iterations_remaining: limits.loop_iteration_limit,
+            call_depth_limit: limits.call_depth_limit,
         }
     }
 
@@ -370,13 +416,33 @@ impl Interpreter {
     /// expression.
     fn guarded<T>(&mut self, action: impl FnOnce(&mut Self) -> JsResult<T>) -> JsResult<T> {
         if self.steps_remaining == 0 {
-            return Err(JsError::new(STEP_LIMIT_EXCEEDED));
+            return Err(JsError::with_context(
+                crate::JsErrorCategory::Limit,
+                STEP_LIMIT_EXCEEDED,
+                "evaluation step budget",
+            ));
         }
         self.steps_remaining -= 1;
         if self.stack.exhausted() {
-            return Err(JsError::new(STACK_OVERFLOW));
+            return Err(JsError::with_context(
+                crate::JsErrorCategory::Limit,
+                STACK_OVERFLOW,
+                "call stack",
+            ));
         }
         action(self)
+    }
+
+    fn next_loop_iteration(&mut self) -> JsResult<()> {
+        if self.loop_iterations_remaining == 0 {
+            return Err(JsError::with_context(
+                crate::JsErrorCategory::Limit,
+                "Script exceeded the loop iteration limit",
+                "while loop iteration",
+            ));
+        }
+        self.loop_iterations_remaining -= 1;
+        Ok(())
     }
 
     /// Runs a script or function body after hoisting its declarations.
@@ -462,6 +528,7 @@ impl Interpreter {
             Statement::While { condition, body } => {
                 let mut last = Value::Undefined;
                 while is_truthy(&self.evaluate(condition, scope)?) {
+                    self.next_loop_iteration()?;
                     match self.execute_statement(scope, body)? {
                         Completion::Normal(Some(value)) => last = value,
                         Completion::Normal(None) => {}
@@ -540,7 +607,11 @@ impl Interpreter {
                         Expr::Identifier(name) => format!("`{name}`"),
                         _ => "expression".to_owned(),
                     };
-                    return Err(JsError::new(format!("{description} is not a function")));
+                    return Err(JsError::with_context(
+                        crate::JsErrorCategory::Runtime,
+                        format!("{description} is not a function"),
+                        "function call",
+                    ));
                 };
                 self.call(&function, &arguments)
             }
@@ -556,6 +627,14 @@ impl Interpreter {
                 closure,
                 ..
             } => self.guarded(|interpreter| {
+                if interpreter.call_depth >= interpreter.call_depth_limit {
+                    return Err(JsError::with_context(
+                        crate::JsErrorCategory::Limit,
+                        STACK_OVERFLOW,
+                        "script function call depth",
+                    ));
+                }
+                interpreter.call_depth += 1;
                 let scope = child_scope(closure);
                 for (index, param) in params.iter().enumerate() {
                     declare_var(&scope, param)?;
@@ -565,10 +644,12 @@ impl Interpreter {
                         arguments.get(index).cloned().unwrap_or(Value::Undefined),
                     );
                 }
-                Ok(match interpreter.run_body(&scope, body)? {
+                let result = match interpreter.run_body(&scope, body)? {
                     Completion::Return(value) => value,
                     Completion::Normal(_) => Value::Undefined,
-                })
+                };
+                interpreter.call_depth -= 1;
+                Ok(result)
             }),
         }
     }
