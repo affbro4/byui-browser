@@ -14,6 +14,38 @@ fn arena_document_starts_with_a_document_root() {
 }
 
 #[test]
+fn create_element_follows_html_document_rules() {
+    let mut document = HTMLDocument::new();
+
+    let element = document.create_element("DiV-Card").expect("valid name");
+    let node = document.node(element).expect("created node");
+
+    assert_eq!(node.parent, None);
+    assert_eq!(node.children, Vec::new());
+    assert!(matches!(
+        &node.kind,
+        NodeKind::Element(ElementData {
+            name,
+            namespace: Namespace::Html,
+            attributes,
+        }) if name == "div-card" && attributes.is_empty()
+    ));
+}
+
+#[test]
+fn create_element_rejects_invalid_names() {
+    let mut document = HTMLDocument::new();
+
+    for name in ["", "1div", "div name", "div/name", "div>"] {
+        assert_eq!(
+            document.create_element(name),
+            Err(html::DomError::InvalidCharacter),
+            "expected {name:?} to be rejected"
+        );
+    }
+}
+
+#[test]
 fn arena_nodes_are_connected_with_stable_ids_and_spans() {
     let mut document = HTMLDocument::new();
     let paragraph = document.push_node(
