@@ -74,7 +74,10 @@ pub fn register_fetch(realm: &mut Realm, controller: Arc<RequestController>) -> 
 // types, names, and module layout however your crate's public API needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Element {
+    /// Index of this element in its document's DOM arena.
     pub node: NodeId,
+    /// The element's HTML local name, normalized to ASCII lowercase.
+    pub local_name: String,
     /// Value of the `id` attribute, if any.
     pub id_attr: Option<String>,
 }
@@ -89,7 +92,10 @@ pub struct Document {
 impl Document {
     /// An empty document.
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            elements: Vec::new(),
+            source_document: None,
+        }
     }
 
     /// Creates a script-visible document from the HTML document tree.
@@ -109,6 +115,7 @@ impl Document {
                             .map(|attribute| attribute.value.clone());
                         elements.push(Element {
                             node: NodeId::new(child.index() as u32),
+                            local_name: element.name.clone(),
                             id_attr,
                         });
                     }
@@ -123,6 +130,35 @@ impl Document {
             elements,
             source_document: Some(document.clone()),
         }
+    }
+
+    /// Implements `document.createElement(localName)` for an HTML document.
+    ///
+    /// The returned element is detached until a later tree mutation appends
+    /// it. Names are validated according to the DOM Standard and normalized
+    /// to ASCII lowercase. Invalid names return `InvalidCharacterError`.
+    /// This Rust API owns the created node in the document's private arena.
+    /// JavaScript method bindings and custom-element options are not supported.
+    pub fn create_element(&mut self, local_name: &str) -> JsResult<Element> {
+        let document = self.source_document.get_or_insert_with(HTMLDocument::new);
+
+        let node = document
+            .create_element(local_name)
+            .map_err(|error| JsError::new(error.to_string()))?;
+
+        let element = match document.node(node) {
+            Some(html::Node {
+                kind: NodeKind::Element(element),
+                ..
+            }) => element,
+            _ => return Err(JsError::new("created node is not an element")),
+        };
+
+        Ok(Element {
+            node: NodeId::new(node.index() as u32),
+            local_name: element.name.clone(),
+            id_attr: None,
+        })
     }
 
     /// `document.getElementById(id)`.
@@ -452,6 +488,52 @@ mod tests {
             .expect("nested element");
         assert_eq!(element.node.index(), 2);
         assert_eq!(document.get_element_by_id("NESTED"), None);
+    }
+
+    #[test]
+    fn create_element_lowercases_and_returns_a_detached_html_element() {
+        let mut document = super::Document::new();
+
+        let element = document.create_element("CuStOm-Widget").unwrap();
+
+        assert_eq!(element.local_name, "custom-widget");
+        assert_eq!(element.node.index(), 1);
+        assert_eq!(element.id_attr, None);
+    }
+
+    #[test]
+    fn create_element_rejects_invalid_local_names() {
+        let mut document = super::Document::new();
+
+        for name in ["", "1div", "div name", "div/name", "div>"] {
+            assert_eq!(
+                document.create_element(name).unwrap_err().to_string(),
+                "InvalidCharacterError",
+                "expected {name:?} to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn created_elements_preserve_parsed_nodes_and_stay_out_of_queries() {
+        let mut document = super::Document::from_html_document(&parse_raw_html(
+            "<div id='existing'></div>".into(),
+        ));
+        let first = document.create_element("DIV").unwrap();
+        let second = document.create_element("span").unwrap();
+        assert_eq!(first.node, NodeId::new(2));
+        assert_eq!(second.node, NodeId::new(3));
+        assert_eq!(
+            document.query_selector_all("*").unwrap(),
+            vec![NodeId::new(1)]
+        );
+        assert_eq!(
+            document.get_element_by_id("existing").unwrap().node,
+            NodeId::new(1)
+        );
+        let source = document.source_document.as_ref().unwrap();
+        assert_eq!(source.node(html::NodeId(2)).unwrap().parent, None);
+        assert_eq!(source.node(html::NodeId(3)).unwrap().parent, None);
     }
 
     #[test]
