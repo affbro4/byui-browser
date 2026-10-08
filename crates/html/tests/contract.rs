@@ -215,6 +215,40 @@ fn get_element_by_id_accepts_an_empty_id() {
 }
 
 #[test]
+fn remove_detaches_a_node_but_preserves_its_subtree() {
+    let mut document =
+        parse_raw_html("<section><span id='target'>text</span></section><p></p>".to_owned());
+    let section = html::NodeId(1);
+    let span = document.get_element_by_id("target").expect("target");
+    let text = document
+        .nodes
+        .iter()
+        .position(|node| matches!(&node.kind, NodeKind::Text(value) if value == "text"))
+        .map(html::NodeId)
+        .expect("text node");
+
+    document.remove(section);
+
+    assert_eq!(document.node(section).unwrap().parent, None);
+    assert_eq!(document.node(span).unwrap().parent, Some(section));
+    assert_eq!(document.node(text).unwrap().parent, Some(span));
+    assert_eq!(document.get_element_by_id("target"), None);
+}
+
+#[test]
+fn remove_of_detached_or_root_nodes_is_a_no_op() {
+    let mut document = parse_raw_html("<div></div>".to_owned());
+    let detached = document.push_node(NodeKind::Comment("detached".into()), None);
+    let children_before = document.nodes[document.root.0].children.clone();
+
+    document.remove(detached);
+    document.remove(document.root);
+
+    assert_eq!(document.node(detached).unwrap().parent, None);
+    assert_eq!(document.nodes[document.root.0].children, children_before);
+}
+
+#[test]
 fn parses_attributes_and_boolean_attributes_as_ordered_values() {
     let document = parse_raw_html("<input disabled class='field' data-count=3>".to_owned());
     let input = document.query("input").pop().expect("input");
