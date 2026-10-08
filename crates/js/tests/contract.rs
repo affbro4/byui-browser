@@ -71,3 +71,49 @@ fn invalid_bindings_return_errors() {
     assert!(eval("const answer = 42; answer = 7").is_err());
     assert!(eval("let answer = 1; let answer = 2").is_err());
 }
+
+#[test]
+fn executes_only_selected_branch() {
+    assert_eq!(
+        eval("let x = 0; if (1 < 2) { x = 4; } else { x = 9; } x"),
+        Ok(Value::Number(4.0))
+    );
+}
+
+#[test]
+fn while_loop_supports_assignment_progress() {
+    assert_eq!(
+        eval("let i = 0; while (i < 5) { i = i + 1; } i"),
+        Ok(Value::Number(5.0))
+    );
+}
+
+#[test]
+fn nested_calls_bind_parameters_and_propagate_return() {
+    assert_eq!(
+        eval(
+            "function add(a, b) { return a + b; } function twice(x) { return add(x, x); } twice(7)"
+        ),
+        Ok(Value::Number(14.0))
+    );
+}
+
+#[test]
+fn recursive_calls_have_independent_local_scopes() {
+    assert_eq!(
+        eval("function fact(n) { if (n <= 1) { return 1; } return n * fact(n - 1); } fact(6)"),
+        Ok(Value::Number(720.0))
+    );
+}
+
+#[test]
+fn bad_calls_and_excessive_recursion_return_errors() {
+    assert!(eval("function f(a) { return a; } f()").is_err());
+    assert!(eval("notCallable()").is_err());
+    assert!(
+        eval("function loop() { return loop(); } loop()")
+            .unwrap_err()
+            .message
+            .contains("recursion")
+    );
+}

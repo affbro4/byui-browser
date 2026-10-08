@@ -10,11 +10,23 @@ struct Binding {
     value: Value,
     mutable: bool,
 }
+#[derive(Clone, Debug)]
+struct Function {
+    params: Vec<String>,
+    body: Vec<Statement>,
+}
+#[derive(Debug)]
+enum Completion {
+    Normal(Value),
+    Return(Value),
+}
 
 /// A chain of lexical environments used while executing a JavaScript program.
 #[derive(Debug, Default)]
 pub struct Environment {
     scopes: Vec<HashMap<String, Binding>>,
+    functions: Vec<HashMap<String, Function>>,
+    call_depth: usize,
 }
 
 impl Environment {
@@ -22,14 +34,18 @@ impl Environment {
     pub fn new() -> Self {
         Self {
             scopes: vec![HashMap::new()],
+            functions: vec![HashMap::new()],
+            call_depth: 0,
         }
     }
 
     fn push_scope(&mut self) {
         self.scopes.push(HashMap::new());
+        self.functions.push(HashMap::new());
     }
     fn pop_scope(&mut self) {
         self.scopes.pop();
+        self.functions.pop();
     }
 
     fn declare(&mut self, name: &str, value: Value, kind: VarKind) -> JsResult<()> {
@@ -82,32 +98,88 @@ pub fn evaluate_program(program: &Program) -> JsResult<Value> {
 }
 
 fn execute_statements(environment: &mut Environment, statements: &[Statement]) -> JsResult<Value> {
-    let mut result = Value::Undefined;
-    for statement in statements {
-        result = execute_statement(environment, statement)?;
+    match execute_sequence(environment, statements)? {
+        Completion::Normal(value) | Completion::Return(value) => Ok(value),
     }
-    Ok(result)
 }
 
-fn execute_statement(environment: &mut Environment, statement: &Statement) -> JsResult<Value> {
+fn execute_sequence(
+    environment: &mut Environment,
+    statements: &[Statement],
+) -> JsResult<Completion> {
+    let mut result = Value::Undefined;
+    for statement in statements {
+        match execute_statement(environment, statement)? {
+            Completion::Normal(value) => result = value,
+            returned @ Completion::Return(_) => return Ok(returned),
+        }
+    }
+    Ok(Completion::Normal(result))
+}
+
+fn execute_statement(environment: &mut Environment, statement: &Statement) -> JsResult<Completion> {
     match statement {
-        Statement::Expression(expression) => evaluate_in(expression, environment),
+        Statement::Expression(expression) => {
+            Ok(Completion::Normal(evaluate_in(expression, environment)?))
+        }
         Statement::VariableDeclaration { kind, name, init } => {
             let value = init.as_ref().map_or(Ok(Value::Undefined), |expression| {
                 evaluate_in(expression, environment)
             })?;
             environment.declare(name, value, *kind)?;
-            Ok(Value::Undefined)
+            Ok(Completion::Normal(Value::Undefined))
         }
         Statement::Block(statements) => {
             environment.push_scope();
-            let result = execute_statements(environment, statements);
+            let result = execute_sequence(environment, statements);
             environment.pop_scope();
             result
         }
-        _ => Err(JsError::new(
-            "statement is not supported by the tree-walk interpreter",
-        )),
+        Statement::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            let branch: Option<&Statement> = if is_truthy(&evaluate_in(condition, environment)?) {
+                Some(then_branch.as_ref())
+            } else {
+                else_branch.as_deref()
+            };
+            branch.map_or(Ok(Completion::Normal(Value::Undefined)), |s| {
+                execute_statement(environment, s)
+            })
+        }
+        Statement::While { condition, body } => {
+            let mut value = Value::Undefined;
+            while is_truthy(&evaluate_in(condition, environment)?) {
+                match execute_statement(environment, body)? {
+                    Completion::Normal(v) => value = v,
+                    returned @ Completion::Return(_) => return Ok(returned),
+                }
+            }
+            Ok(Completion::Normal(value))
+        }
+        Statement::FunctionDeclaration { name, params, body } => {
+            let scope = environment
+                .functions
+                .last_mut()
+                .ok_or_else(|| JsError::new("missing function scope"))?;
+            if scope.contains_key(name) {
+                return Err(JsError::new(format!("`{name}` has already been declared")));
+            }
+            scope.insert(
+                name.clone(),
+                Function {
+                    params: params.clone(),
+                    body: body.clone(),
+                },
+            );
+            Ok(Completion::Normal(Value::Undefined))
+        }
+        Statement::Return(value) => Ok(Completion::Return(match value {
+            Some(expression) => evaluate_in(expression, environment)?,
+            None => Value::Undefined,
+        })),
     }
 }
 
@@ -157,9 +229,47 @@ fn evaluate_in(expression: &Expr, environment: &mut Environment) -> JsResult<Val
                 Ok(left)
             }
         }
-        Expr::Call { .. } => Err(JsError::new(
-            "function calls are not supported by the tree-walk interpreter",
-        )),
+        Expr::Call { callee, arguments } => {
+            let name = match callee.as_ref() {
+                Expr::Identifier(name) => name,
+                _ => return Err(JsError::new("invalid function call target")),
+            };
+            let function = environment
+                .functions
+                .iter()
+                .rev()
+                .find_map(|scope| scope.get(name))
+                .cloned()
+                .ok_or_else(|| JsError::new(format!("`{name}` is not callable")))?;
+            let args = arguments
+                .iter()
+                .map(|e| evaluate_in(e, environment))
+                .collect::<JsResult<Vec<_>>>()?;
+            if args.len() != function.params.len() {
+                return Err(JsError::new(format!(
+                    "function `{name}` expects {} arguments, got {}",
+                    function.params.len(),
+                    args.len()
+                )));
+            }
+            // Keep the limit below native stack exhaustion in this tree-walk evaluator.
+            if environment.call_depth >= 64 {
+                return Err(JsError::new("maximum function recursion depth exceeded"));
+            }
+            environment.call_depth += 1;
+            environment.push_scope();
+            let result = (|| {
+                for (param, value) in function.params.iter().zip(args) {
+                    environment.declare(param, value, VarKind::Let)?;
+                }
+                match execute_sequence(environment, &function.body)? {
+                    Completion::Normal(value) | Completion::Return(value) => Ok(value),
+                }
+            })();
+            environment.pop_scope();
+            environment.call_depth -= 1;
+            result
+        }
     }
 }
 
